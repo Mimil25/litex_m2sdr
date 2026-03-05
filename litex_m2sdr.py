@@ -60,6 +60,7 @@ from litex_m2sdr.gateware.pps         import PPSGenerator
 from litex_m2sdr.gateware.header      import TXRXHeader
 from litex_m2sdr.gateware.measurement import MultiClkMeasurement
 from litex_m2sdr.gateware.gpio        import GPIO, GPIORXPacker, GPIOTXUnpacker
+from litex_m2sdr.gateware.deterministic_mmcm_10m_62m5 import DeterministicMMCM
 
 from litex_m2sdr.software import generate_litepcie_software
 
@@ -129,7 +130,7 @@ class CRG(LiteXModule):
         # -------------------
         if with_white_rabbit:
             # RefClk MMCM (125MHz).
-            self.refclk_mmcm = S7MMCM(speedgrade=-3)
+            self.refclk_mmcm = S7MMCM(speedgrade=-3, fractional=False)
             self.comb += self.refclk_mmcm.reset.eq(self.rst)
             self.refclk_mmcm.register_clkin(ClockSignal("clk100"), 100e6)
             self.refclk_mmcm.expose_dps("clk200", with_csr=False)
@@ -141,12 +142,14 @@ class CRG(LiteXModule):
             self.refclk_mmcm.params.update(p_CLKOUT1_USE_FINE_PS="TRUE")
             
             # DMTD MMCM (62.5MHz).
-            self.dmtd_mmcm = S7MMCM(speedgrade=-3)
+            self.dmtd_mmcm = S7MMCM(speedgrade=-3, fractional=False)
             self.comb += self.dmtd_mmcm.reset.eq(self.rst)
             self.dmtd_mmcm.register_clkin(ClockSignal("clk100"), 100e6)
             self.dmtd_mmcm.create_clkout(self.cd_clk_62m5_dmtd, 62.5e6, margin=0)
             self.dmtd_mmcm.expose_dps("clk200", with_csr=False)
             self.dmtd_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
+            
+            platform.add_false_path_constraints(ClockDomain('wr').clk, ClockDomain('clk200').clk)
 
 # BaseSoC ------------------------------------------------------------------------------------------
 
@@ -202,7 +205,7 @@ class BaseSoC(SoCMini):
         with_pcie              = True,  with_pcie_ptm=False, pcie_gen=2, pcie_lanes=1,
         with_eth               = False, eth_sfp=0, eth_phy="1000basex", eth_local_ip="192.168.1.50", eth_udp_port=2345,
         with_sata              = False, sata_gen=2,
-        with_white_rabbit      = False, wr_sfp=1, wr_dac_bits=16, with_adc_sync=False,
+        with_white_rabbit      = False, wr_sfp=1, wr_dac_bits=16, with_adc_sync=False, with_datapath_sync=False,
         with_jtagbone          = True,
         with_gpio              = False,
         with_rfic_oversampling = False,
@@ -277,6 +280,9 @@ class BaseSoC(SoCMini):
         # SI5351 ClkIn Ext/uFL.
         if with_adc_sync: # the ufl port is used to send the PPS to the AD9361, so we can use this signal for the SI5351 clkin passthrough
             self.comb += self.si5351.clkin_ufl.eq(ClockSignal("wr")) 
+        elif with_datapath_sync:
+            self.cd_wr_ad9361 = ClockDomain() # ~10 MHz clock slaved so that RX samplerate is synchronized on white-rabbit
+            self.comb += self.si5351.clkin_ufl.eq(ClockSignal("wr_ad9361")) 
         else :
             self.comb += self.si5351.clkin_ufl.eq(platform.request("sync_clk_in"))
 
@@ -327,9 +333,9 @@ class BaseSoC(SoCMini):
 
         # SPI Flash --------------------------------------------------------------------------------
 
-        self.flash_cs_n = GPIOOut(platform.request("flash_cs_n"))
-        self.flash      = S7SPIFlash(platform.request("flash"), sys_clk_freq, 25e6)
-        self.add_config("FLASH_IMAGE_SIZE", platform.image_size)
+        #self.flash_cs_n = GPIOOut(platform.request("flash_cs_n"))
+        #self.flash      = S7SPIFlash(platform.request("flash"), sys_clk_freq, 25e6)
+        #self.add_config("FLASH_IMAGE_SIZE", platform.image_size)
 
         # PCIe -------------------------------------------------------------------------------------
 
@@ -636,6 +642,8 @@ class BaseSoC(SoCMini):
             # Core Instance.
             # --------------
             sfp_i2c_pads = platform.request("sfp_i2c")
+            flash_pads = platform.request('flash')
+            flash_pads.cs_n = platform.request('flash_cs_n')
             LiteXWRNICSoC.add_wr_core(self,
                 # CPU.
                 cpu_firmware    = "../litex_wr_nic/litex_wr_nic/firmware/spec_a7_wrc.bram", # FIXME: Avoid hardcoded path.
@@ -656,6 +664,9 @@ class BaseSoC(SoCMini):
 
                 # Serial.
                 serial_pads     = self.shared_pads,
+                
+                # SPI
+                flash_pads      = flash_pads,
 
                 # Wishbone Slave.
                 wb_slave_origin = 0x0004_0000,
@@ -707,6 +718,98 @@ class BaseSoC(SoCMini):
                 self.crg.dmtd_mmcm.psincdec.eq(self.dmtd_mmcm_ps_gen.psincdec),
             ]
 
+            if with_datapath_sync:
+                self.ad_init_done = CSRStorage(fields=[
+                    CSRField("done", size=1, offset=0, values=[
+                        ("``0b0``", ""),
+                        ("``0b1``", ""),
+                    ]),
+                ])
+
+                clk_fb = Signal()
+                self.cd_fb62_5 = ClockDomain()
+
+                self.comb += clk_fb.eq(self.ad9361.phy.rx_fb_clk)
+                platform.add_period_constraint(clk_fb, 100) # 100ns <-> 10 MHz
+                
+                self.pll = pll = S7MMCM(speedgrade=-2)
+                self.comb += pll.reset.eq(~ self.ad_init_done.fields.done)
+                pll.register_clkin(clk_fb, 10e6)
+                pll.create_clkout(self.cd_fb62_5, 62.5e6, margin=0)
+
+                
+                # self.deterministic_mmcm = DeterministicMMCM(platform, 'fb62_5')
+                # self.comb += self.deterministic_mmcm.clkin_10m.eq(clk_fb)
+                # self.comb += self.deterministic_mmcm.rst.eq(~ self.ad_init_done.fields.done)
+                # self.comb += self.deterministic_mmcm.ppsin.eq(self.pps_out_pulse)
+
+
+                dac_aux_clk_data = Signal(wr_dac_bits)
+                dac_aux_clk_load = Signal()
+                self.lock_sweep = Signal()
+                self.lock_sweep_phase = Signal(15)
+                LiteXWRNICSoC.add_aux_clock(self,
+                        clk_fb = self.cd_fb62_5.clk,
+                        dac_aux_load = dac_aux_clk_load,
+                        dac_aux_data = dac_aux_clk_data,
+                        lock_sweep = self.pps_out_pulse,
+                        lock_sweep_phase = self.lock_sweep_phase,
+                        )
+                
+                platform.add_source("litex_m2sdr/gateware/refclk_phase_sampler_10m.vhd")
+                self.phase_sampler = Instance('refclk_phase_sampler_10m',
+                                    i_clk_10m_i           = clk_fb,
+                                    i_clk_62m5_i          = ClockSignal('wr'),
+                                    i_pps_csync_i         = self.pps_out_pulse,
+
+                                    o_lock_sweep_o        = self.lock_sweep,
+                                    o_lock_sweep_phase_o  = self.lock_sweep_phase,
+                                    #o_lock_sweep_pattern_o  = self.locksweep_pattern,
+                                )
+                self.locksweep_stat = CSRStatus(fields=[
+                    CSRField("done", size=1, offset=0, values=[
+                        ("``0b0``", ""),
+                        ("``0b1``", ""),
+                    ]),
+                    CSRField("phase", size=5, offset=1),
+                ])
+                self.comb += self.locksweep_stat.fields.done.eq(self.lock_sweep)
+                self.comb += self.locksweep_stat.fields.phase.eq(self.lock_sweep_phase)
+                
+
+                # AD9361 MMCM (10MHz)
+                self.ad9361_mmcm = S7MMCM(speedgrade=-2, fractional=False)
+                self.comb += self.ad9361_mmcm.reset.eq(self.crg.rst)
+                #self.ad9361_mmcm.register_clkin(ClockSignal('wr'), 62.5e6)
+                self.ad9361_mmcm.register_clkin(ClockSignal('clk100'), 100e6)
+                self.ad9361_mmcm.create_clkout(self.cd_wr_ad9361, 10e6, margin=0)
+                self.ad9361_mmcm.expose_dps("clk200", with_csr=False)
+                self.ad9361_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
+                
+                # AD9361 MMCM Phase Shift.
+                # ----------------------
+                self.ad9361_mmcm_ps_gen = PSGen(
+                     cd_psclk    = "clk200",
+                     cd_sys      = "wr",
+                     ctrl_size   = wr_dac_bits,
+                     )
+                self.comb += [
+                    self.ad9361_mmcm_ps_gen.ctrl_data.eq(dac_aux_clk_data),
+                    self.ad9361_mmcm_ps_gen.ctrl_load.eq(dac_aux_clk_load),
+                    self.ad9361_mmcm.psen.eq(self.ad9361_mmcm_ps_gen.psen),
+                    self.ad9361_mmcm.psincdec.eq(self.ad9361_mmcm_ps_gen.psincdec),
+                ]
+                
+                platform.add_extension([
+                    ("wr_clk_out", 0, Pins("V13"), IOStandard("LVCMOS33")),
+                ])
+                
+                self.comb += platform.request('wr_clk_out').eq(clk_fb)
+                #self.comb += platform.request('wr_clk_out').eq(ClockSignal('fb62_5'))
+
+
+
+
             # Timings Constraints.
             # --------------------
             platform.add_platform_command("set_property SEVERITY {{Warning}} [get_drc_checks REQP-123]") # FIXME: Add 10MHz Ext Clk.
@@ -718,6 +821,7 @@ class BaseSoC(SoCMini):
                 "{{*crg_s7mmcm0_clkout}}",
                 "{{*crg_s7mmcm1_clkout}}",
             )
+            LiteXWRNICSoC.do_finalize(self)
         else :
             # PPS Generator ----------------------------------------------------------------------------
 
@@ -847,15 +951,18 @@ class BaseSoC(SoCMini):
             csr_csv      = "test/analyzer.csv"
         )
 
-    def add_ad96361_data_probe(self, depth=4096):
+    def add_ad96361_data_probe(self, depth=512):
         analyzer_signals = [
-            self.ad9361.phy.sink,   # TX.
-            self.ad9361.phy.source, # RX.
-            self.ad9361.prbs_rx.fields.synced,
+            # self.ad9361.phy.sink,   # TX.
+            #self.ad9361.phy.source, # RX.
+            #self.ad9361.prbs_rx.fields.synced,
+            #self.debug,
+            self.pps_out_pulse,
+            #self.lock_sweep_phase
         ]
         self.analyzer = LiteScopeAnalyzer(analyzer_signals,
             depth        = depth,
-            clock_domain = "rfic",
+            clock_domain = "wr",
             register     = True,
             csr_csv      = "test/analyzer.csv"
         )
@@ -899,6 +1006,7 @@ def main():
     parser.add_argument("--wr-sfp",            default=1, type=int,     help="White Rabbit SFP.", choices=[0, 1])
     parser.add_argument("--wr-dac-bits",       default=16, type=int,    help="White Rabbit freq control word size")
     parser.add_argument("--with-adc-sync",     action="store_true",     help="Enable ad9361 adc/dac synchronisation (require hardware modification).")
+    parser.add_argument("--with-datapath-sync",     action="store_true",     help="Enable ad9361 adc/dac syntonisation.")
 
     # Litescope Analyzer Probes.
     probeopts = parser.add_mutually_exclusive_group()
@@ -948,6 +1056,7 @@ def main():
         wr_sfp            = args.wr_sfp,
         wr_dac_bits       = args.wr_dac_bits,
         with_adc_sync     = args.with_adc_sync,
+        with_datapath_sync     = args.with_datapath_sync,
     )
 
     # LiteScope Analyzer Probes.

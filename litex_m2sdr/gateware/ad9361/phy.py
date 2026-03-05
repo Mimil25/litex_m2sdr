@@ -207,6 +207,9 @@ class AD9361PHY(LiteXModule):
             )
         ]
 
+        self.rx_fb_clk = Signal() # extends source.valid for 50% duty-time
+        self.sync.rfic += self.rx_fb_clk.eq(rx_count[1]),
+
         # TX -> RX Loopback ------------------------------------------------------------------------
 
         # Routes TX data to RX when loopback is enabled.

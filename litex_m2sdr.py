@@ -646,7 +646,7 @@ class BaseSoC(SoCMini):
             flash_pads.cs_n = platform.request('flash_cs_n')
             LiteXWRNICSoC.add_wr_core(self,
                 # CPU.
-                cpu_firmware    = "../litex_wr_nic/litex_wr_nic/firmware/spec_a7_wrc.bram", # FIXME: Avoid hardcoded path.
+                cpu_firmware    = "../litex_wr_nic/litex_wr_nic/firmware/m2sdr_wrc.bram", # FIXME: Avoid hardcoded path.
 
                 # Board name.
                 board_name       = "SAWR",

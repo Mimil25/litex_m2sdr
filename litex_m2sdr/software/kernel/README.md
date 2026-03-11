@@ -5,7 +5,7 @@
 
 ## Overview
 
-By loading the **litepcie** kernel module, you gain access to:
+By loading the **m2sdr** kernel module, you gain access to:
 - **DMA channels (TX/RX)** for high-speed data transfer.
 - **Control/status registers** to configure and monitor hardware.
 - **Interrupt handling** for a responsive data flow.
@@ -67,8 +67,8 @@ This removes:
 sudo sh -c "echo 'module m2sdr +p' > /sys/kernel/debug/dynamic_debug/control"
 ```
   This helps diagnose data flow or interrupt issues. 🔎
-- **IOMMU**
-  If your system has an IOMMU, ensure it’s set to passthrough mode. Otherwise, DMA may be blocked or fail to work properly.
+- **Host Requirements**
+  For IOMMU/DMA settings and PCIe expectations, see the top-level README.
 
 ---
 

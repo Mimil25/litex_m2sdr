@@ -1,7 +1,7 @@
 /*
  * SoapySDR driver for the LiteX M2SDR.
  *
- * Copyright (c) 2021-2025 Enjoy Digital.
+ * Copyright (c) 2021-2026 Enjoy Digital.
  * SPDX-License-Identifier: Apache-2.0
  * http://www.apache.org/licenses/LICENSE-2.0
  */
@@ -17,11 +17,14 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <cstdint>
 
 #include "liblitepcie.h"
 #include "etherbone.h"
 #include "libm2sdr.h"
+#include "m2sdr.h"
 
+#include <SoapySDR/Constants.h>
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Logger.hpp>
 #include <SoapySDR/Time.hpp>
@@ -32,6 +35,11 @@
 extern "C" {
 #include "liteeth_udp.h"
 }
+
+enum class SoapyLiteXM2SDREthernetMode {
+    UDP = 0,
+    VRT = 1,
+};
 #endif
 
 #define DEBUG
@@ -45,17 +53,52 @@ extern "C" {
 
 #define DLL_EXPORT __attribute__ ((visibility ("default")))
 
+/*
+ * LiteX M2SDR specific flags for RX overflow buffer count reporting.
+ *
+ * When SOAPY_SDR_OVERFLOW is returned from acquireReadBuffer(), the flags
+ * parameter contains the number of lost DMA buffers.
+ *
+ * Check for LITEX_HAS_OVERFLOW_COUNT in flags to determine if the count
+ * is available. If set, extract the count using:
+ *   int lost_buffers = (flags & LITEX_OVERFLOW_COUNT_MASK) >> LITEX_OVERFLOW_COUNT_SHIFT;
+ *
+ * This allows applications to calculate the exact number of lost samples:
+ *   lost_samples = lost_buffers * samples_per_buffer
+ *
+ * Bit layout (flags is int, 32 bits):
+ *   Bits 0-7:   Standard SoapySDR flags (OVERFLOW, TIMEOUT, etc.)
+ *   Bits 8-15:  Reserved
+ *   Bit 16:     LITEX_HAS_OVERFLOW_COUNT (SOAPY_SDR_USER_FLAG0)
+ *   Bits 17-30: Lost buffer count (14 bits, up to 16K buffers)
+ *   Bit 31:     Sign bit (unused)
+ */
+#ifndef SOAPY_SDR_USER_FLAG0
+#define SOAPY_SDR_USER_FLAG0 (1 << 16)
+#endif
+#define LITEX_HAS_OVERFLOW_COUNT    SOAPY_SDR_USER_FLAG0
+#define LITEX_OVERFLOW_COUNT_SHIFT  17
+#define LITEX_OVERFLOW_COUNT_MASK   0x7FFE0000  /* 14 bits for count (up to 16K buffers) */
+
 #if USE_LITEPCIE
 #define FD_INIT -1
-#define litex_m2sdr_writel(_fd, _addr, _val) litepcie_writel(_fd, _addr, _val)
-#define litex_m2sdr_readl(_fd, _addr) litepcie_readl(_fd, _addr)
 typedef int litex_m2sdr_device_desc_t;
 #elif USE_LITEETH
 #define FD_INIT NULL
-#define litex_m2sdr_writel(_fd, _addr, _val) eb_write32(_fd, _val, _addr)
-#define litex_m2sdr_readl(_fd, _addr) eb_read32(_fd, _addr)
 typedef struct eb_connection *litex_m2sdr_device_desc_t;
 #endif
+
+static inline uint32_t litex_m2sdr_readl(struct m2sdr_dev *dev, uint32_t addr)
+{
+    uint32_t val = 0;
+    m2sdr_reg_read(dev, addr, &val);
+    return val;
+}
+
+static inline void litex_m2sdr_writel(struct m2sdr_dev *dev, uint32_t addr, uint32_t val)
+{
+    m2sdr_reg_write(dev, addr, val);
+}
 
 class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
  /**************************************************************************************************
@@ -343,6 +386,7 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
  **************************************************************************************************/
   private:
     SoapySDR::Kwargs _deviceArgs;
+    struct m2sdr_dev *_dev = nullptr;
     SoapySDR::Stream *const TX_STREAM = (SoapySDR::Stream *)0x1;
     SoapySDR::Stream *const RX_STREAM = (SoapySDR::Stream *)0x2;
 
@@ -357,6 +401,7 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
 #if USE_LITEETH
     struct liteeth_udp_ctrl _udp;
     bool _udp_inited = false;
+    SoapyLiteXM2SDREthernetMode _eth_mode = SoapyLiteXM2SDREthernetMode::UDP;
 #endif
 
     struct Stream {
@@ -395,6 +440,12 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
 
         bool overflow  = false;
         bool burst_end = false;
+        bool time_valid = false;
+        long long time0_ns = 0;
+        int64_t time0_count = 0;
+        long long remainderTimeNs = 0;
+        long long last_time_ns = 0;
+        bool time_warned = false;
     };
 
     struct TXStream: Stream {
@@ -409,10 +460,15 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
 
         bool   burst_end   = false;
         int32_t burst_samps = 0;
+        std::map<size_t, uint8_t*> pendingWriteBufs;
     };
 
     RXStream _rx_stream;
     TXStream _tx_stream;
+    std::vector<std::string> _rx_antennas;
+    std::vector<std::string> _tx_antennas;
+    int _rx_agc_mode = 0;
+    std::string _ad9361_fir_profile = "legacy"; /* legacy | bypass | match | wide */
 
     void interleaveCF32(
         const void *src,
@@ -433,6 +489,18 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
         size_t offset);
 
     void deinterleaveCS16(
+        const void *src,
+        void *dst,
+        uint32_t len,
+        size_t offset);
+
+    void interleaveCS8(
+        const void *src,
+        void *dst,
+        uint32_t len,
+        size_t offset);
+
+    void deinterleaveCS8(
         const void *src,
         void *dst,
         uint32_t len,
@@ -460,6 +528,7 @@ class DLL_EXPORT SoapyLiteXM2SDR : public SoapySDR::Device {
 
     litex_m2sdr_device_desc_t _fd;
     struct ad9361_rf_phy *ad9361_phy;
+    uint8_t _spi_id = 0;
 
     uint32_t _bitMode           = 16;
     uint32_t _oversampling      = 0;

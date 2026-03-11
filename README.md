@@ -3,16 +3,24 @@
                           / /__/ / __/ -_)>  </___/ /|_/ / __/_\ \/ // / , _/
                          /____/_/\__/\__/_/|_|   /_/  /_/____/___/____/_/|_|
                                   LiteX based M2 SDR FPGA board.
-                               Copyright (c) 2024-2025 Enjoy-Digital.
+                               Copyright (c) 2024-2026 Enjoy-Digital.
 
-![License](https://img.shields.io/badge/License-BSD%202--Clause-orange.svg)
+[![](https://github.com/enjoy-digital/litex_m2sdr/actions/workflows/ci.yml/badge.svg)](https://github.com/enjoy-digital/litex_m2sdr/actions/workflows/ci.yml) ![License](https://img.shields.io/badge/License-BSD%202--Clause-orange.svg) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/enjoy-digital/litex_m2sdr) [![Buy Hardware](https://img.shields.io/badge/Buy-Hardware-00A6B2)](https://enjoy-digital-shop.myshopify.com/)
 
 [> TL;DR
 ---------
 - **What?** LiteX‑based M.2 2280 SDR board featuring a Xilinx **Artix‑7 XC7A200T** FPGA and an **ADI AD9361** RFIC.
 - **Why?** Open‑source gateware/software, up to 61.44 MSPS (122.88 MSPS†) over PCIe Gen2 ×4, hack‑friendly clocking & debug.
-- **Who?** SDR tinkerers, FPGA devs, time‑sync enthusiats or anyone hitting the limits of other SDRs.
+- **Who?** SDR tinkerers, FPGA devs, time‑sync enthusiasts, or anyone hitting the limits of other SDRs.
 - **How fast?** `apt install …` → `./build.py` → **stream/record IQ in ≈5 min** with our C API/tools or any SoapySDR compatible software.
+
+## C API (libm2sdr)
+
+- Docs: `litex_m2sdr/doc/libm2sdr/README.md`
+- Examples: `litex_m2sdr/doc/libm2sdr/example_sync_rx.c`, `litex_m2sdr/doc/libm2sdr/example_sync_tx.c`
+- Install metadata: `litex_m2sdr/software/user/libm2sdr/m2sdr.pc`
+- Current public library version: `1.0.0` (ABI `1`)
+- Recent API additions: backend accessors `m2sdr_get_transport()` / `m2sdr_get_eb_handle()` and finer-grained `parse`/`range`/`state` error classes.
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/c3007b14-0c55-4863-89fa-749082692b4f" alt="LiteX M2 SDR annotated" width="100%">
@@ -29,7 +37,7 @@ We know what you'll first ask when discovering this new SDR project: what's the 
 Why yet another SDR based on this RFIC? Because we've been designing FPGA-based projects for clients with this chip for almost 10 years now and still think this RFIC has incredible capabilities and possibilities that haven't been fully tapped by open-source projects. We believe it can provide a fantastic and simple solution when paired with the [LiteX](https://github.com/enjoy-digital/litex) framework we're developing. 🚀
 
 <div align="center">
-  <img src="https://github.com/enjoy-digital/litex_m2sdr/assets/1450143/1a3f2d76-b406-4928-b3ed-2767d317757e" width="100%">
+  <img src="https://github.com/user-attachments/assets/dec9bbd6-532d-4596-805b-94078df426a2" width="100%">
 </div>
 
 Imagine a minimalist AD9361-based SDR with:
@@ -42,7 +50,7 @@ Imagine a minimalist AD9361-based SDR with:
 - Or ... for SATA through [LiteSATA](https://github.com/enjoy-digital/litesata). 💾
 - Or ... for inter-board SerDes-based communication through [LiteICLink](https://github.com/enjoy-digital/liteiclink). 🔗
 - Powerful debug capabilities through LiteX [Host <-> FPGA bridges](https://github.com/enjoy-digital/litex/wiki/Use-Host-Bridge-to-control-debug-a-SoC) and [LiteScope](https://github.com/enjoy-digital/litescope) logic analyzer. 🛠️
-- Multiboot support to allow secure remove update over PCIe (or Ethernet).
+- Multiboot support to allow secure remote update over PCIe (or Ethernet).
 - ...and we hope a welcoming/friendly community as we strive to encourage in LiteX! 🤗
 
 OK, you probably also realized this project is a showcase for LiteX capabilities, haha. 😅 Rest assured, we'll do our best to gather and implement your requests to make this SDR as flexible and versatile as possible!
@@ -54,7 +62,7 @@ Ideal for SDR enthusiasts, this versatile board fits directly into an M2 slot or
 For Ethernet support with 1000BaseX/2500BaseX and SATA connectivity to directly record/play samples to/from an SSD, mount it on the LiteX Acorn Mini Baseboard! 💽
 
 <div align="center">
-  <img src="https://github.com/enjoy-digital/litex_m2sdr/assets/1450143/6ad09754-7aaf-4257-ba12-afbd93ebe75d" width="100%">
+  <img src="https://github.com/user-attachments/assets/fb75aeeb-4e99-45b5-9582-0c4dbd079af6" width="100%">
 </div>
 
 Unlock new possibilities in your SDR projects with this cutting-edge board—we'll try our best to meet your needs! 🎉
@@ -144,7 +152,7 @@ The PCIe design has already been validated at the maximum AD9361 specified sampl
   <img src="https://github.com/user-attachments/assets/bbcc0c79-4ae8-4e5b-94d8-aa7aff89bae2" width="100%">
 </div>
 
-The Ethernet design variant will gives flexibility when deploying the SDR. The PCIe connector has 4 SerDes transceivers that are in most cases used for... PCIe :) But these are 4 classical GTP transceivers of the Artix7 FPGA that are connected to the PCIe Hardened PHY in the case of a PCIe application but that can be used for any other SerDes-based protocol: Ethernet 1000BaseX/2500BaseX, SATA, etc...
+The Ethernet design variant gives flexibility when deploying the SDR. The PCIe connector has 4 SerDes transceivers that are in most cases used for... PCIe :) But these are 4 classical GTP transceivers of the Artix7 FPGA that are connected to the PCIe hardened PHY in the case of a PCIe application but can be used for any other SerDes-based protocol: Ethernet 1000BaseX/2500BaseX, SATA, etc...
 
 In this design, the PCIe core will then be replaced with [LiteEth](https://github.com/enjoy-digital/liteeth), providing the 1000BaseX or 2500BaseX PHY but also the UDP/IP hardware stack + Streaming/Etherbone front-end cores.
 
@@ -159,20 +167,18 @@ The Ethernet SoC design is RX capable only for now. TX support will come soon.
 If you are an SDR enthusiast looking to get started with the LiteX-M2SDR board, follow these simple steps to get up and running quickly:
 
 1. **Install Prerequisite Packages:**
-   - On a fresh Ubuntu system, install the required development and SDR packages to ensure compatibility with the LiteX-M2SDR software. Run the following command in your terminal:
+   - On a fresh Ubuntu system, install the required development and SDR packages to ensure compatibility with the LiteX-M2SDR software:
    ```bash
-   sudo apt install build-essential cmake libsoapysdr-dev libsndfile1-dev libsamplerate0-dev
+   sudo apt install build-essential cmake git \
+     pkg-config libsdl2-dev libgl1-mesa-dev \
+     libsoapysdr-dev soapysdr-tools libsoapysdr0.8 \
+     gnuradio gnuradio-dev libgnuradio-soapy3.10.9t64 gqrx-sdr \
+     libsndfile1-dev libsamplerate0-dev
    ```
    - **Note**: For non-Ubuntu Linux distributions (e.g., Fedora, Arch), install the equivalent packages using your distribution's package manager (e.g., `dnf` for Fedora or `pacman` for Arch).
 
 2. **Connect the Board:**
    - Insert the LiteX-M2SDR board into an available M2 slot on your Linux computer and connect your antennas.
-
-3. **Install Required Software:**
-   - Ensure you have the necessary software installed on your Linux system. You can do this by running the following command in your terminal:
-   ```
-   sudo apt install git cmake gnuradio gnuradio-dev soapysdr-tools libsoapysdr0.8 libsoapysdr-dev libgnuradio-soapy3.10.9t64 gqrx-sdr
-   ```
 
 > [!WARNING]
 >
@@ -185,13 +191,20 @@ If you are an SDR enthusiast looking to get started with the LiteX-M2SDR board, 
    ```
 
 5. **Build and Install Software:**
-    Software build use make and cmake for the C kernel driver and utilities, but since we also like Python 😅, we created a small script on top if it to simplify our developpment and installation:
+    Software build uses `make` and CMake for the C kernel driver and utilities, but since we also like Python 😅, we created a small script on top of it to simplify development and installation:
    - Navigate to the software directory and run the build script:
    ```
    cd litex_m2sdr/software
    ./build.py
    ```
-   - This will build the necessary components including the kernel driver, user-space utilities, and the SoapySDR driver.
+   - This builds the kernel driver, the user-space utilities, `libm2sdr`, and the SoapySDR driver.
+   - To install the public C API headers/library for external applications:
+   ```
+   cd litex_m2sdr/software/user
+   make
+   sudo make install_dev PREFIX=/usr/local
+   sudo ldconfig
+   ```
 
 6. **Load the Kernel Driver:**
    - Load the kernel driver with the following commands:
@@ -205,6 +218,13 @@ If you are an SDR enthusiast looking to get started with the LiteX-M2SDR board, 
 
 7. **Run Your SDR Software:**
    - Now, you can launch your preferred SDR software (like GQRX or GNU Radio) and select the LiteX-M2SDR board through SoapySDR. 📡
+
+### Host Requirements & Expectations
+
+- **IOMMU / DMA**: For PCIe streaming, set IOMMU to passthrough mode. If you don't see I/Q data streams in your SDR app, this is the first thing to check.
+- **PCIe Gen & Lanes**: Oversampling (122.88 MSPS) requires PCIe Gen2 x2/x4 bandwidth. Gen2 x1 is enough for standard 61.44 MSPS.
+- **Ethernet VRT (optional RX path)**: Build with `--with-eth --with-eth-vrt` to enable an Ethernet RX VRT UDP streamer in hardware. A simple host receiver utility is available at `litex_m2sdr/software/user/m2sdr_vrt_rx.py`.
+- **Ethernet / SATA (WIP)**: Ethernet SoC is RX-only for now; TX support is in development. SATA support is in development. Both require the LiteX Acorn Baseboard Mini.
 
 > [!TIP]
 > If you don't see I/Q data streams in your SDR app, make sure IOMMU is set to passthrough mode. Add the following to your GRUB configuration:
@@ -243,7 +263,23 @@ For some platforms we created detailed tutorials. For everything else, please fo
 
 For those who want to dive deeper into development with the LiteX-M2SDR board, follow these additional steps after completing the SDR enthusiast steps:
 
-1. **Run Software Tests:**
+1. **Test Structure (CI-safe vs hardware scripts):**
+   - Gateware simulation/unit tests live in `test/` and are CI-safe (no hardware needed):
+   ```
+   pytest -v test
+   ```
+   - Board control/debug scripts live in `scripts/` and require a running board/server:
+   ```
+   python3 scripts/test_xadc.py
+   python3 scripts/test_dashboard.py
+   ```
+   - CI runs both software build checks and simulation tests with:
+   ```
+   # Software build checks (kernel/user/SoapySDR) are run in CI.
+   python3 -m pytest -v test
+   ```
+
+2. **Run Software Tests:**
    - Test the kernel:
    ```
    cd litex_m2sdr/software/kernel
@@ -260,23 +296,31 @@ For those who want to dive deeper into development with the LiteX-M2SDR board, f
    ./tone_gen.py tone_tx.bin
    ./m2sdr_play tone_tx.bin 100000
    ```
+   - C API (libm2sdr) quick start and examples:
+   ```
+   See litex_m2sdr/doc/libm2sdr/README.md
+   cd litex_m2sdr/software/user
+   make examples
+   ../../doc/libm2sdr/example_sync_rx > /tmp/rx.iq
+   ```
+   - `libm2sdr` is the common host interface used by the user utilities and the SoapySDR module, so example code there is the reference starting point for new host applications.
 
-2. **SoapySDR Detection/Probe:**
+3. **SoapySDR Detection/Probe:**
    - Detect the LiteX-M2SDR board:
    ```
    SoapySDRUtil --probe="driver=LiteXM2SDR"
    ```
 
-3. **Run GNU Radio FM Test:**
+4. **Run GNU Radio FM Test:**
    - Open and run the GNU Radio FM test:
    ```
-   gnuradio-companion ../gnuradio/test_fm_rx.grc
+   gnuradio-companion litex_m2sdr/software/gnuradio/test_fm_rx.grc
    ```
 
-4. **Enable Debugging in Kernel:**
+5. **Enable Debugging in Kernel:**
     - Enable debugging:
     ```
-    sudo sh -c "echo 'module litepcie +p' > /sys/kernel/debug/dynamic_debug/control"
+    sudo sh -c "echo 'module m2sdr +p' > /sys/kernel/debug/dynamic_debug/control"
     ```
 
 ### For Software & FPGA Developers
@@ -303,6 +347,23 @@ For those who want to explore the full potential of the LiteX-M2SDR board, inclu
    ```
    ./litex_m2sdr.py --with-pcie --variant=baseboard --build --load
    lspci
+   ```
+
+3. **White Rabbit (Baseboard):**
+   - White Rabbit is supported on the baseboard variant only:
+   ```
+   ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard --build
+   ```
+   - `--wr-sfp` is optional; when omitted, the first available `sfp` index is auto-selected.
+   - Firmware path lookup order:
+     1. `--wr-firmware`
+     2. `--wr-nic-dir`
+     3. `LITEX_WR_NIC_DIR`
+     4. auto-discovery of `../litex_wr_nic` and `../../litex_wr_nic`
+   - If a stale local `wr-cores/` checkout is detected, refresh it:
+   ```
+   mv wr-cores wr-cores.old
+   ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard --build
    ```
 
 4. **Use JTAGBone/PCIeBone:**
@@ -336,5 +397,5 @@ E-mail: florent@enjoy-digital.fr
 Website: http://enjoy-digital.fr/
 
 <div align="center">
-  <img src="https://github.com/enjoy-digital/litex_m2sdr/assets/1450143/0034fac5-d760-47ed-b93a-6ceaae47e978" width="100%">
+  <img src="https://github.com/user-attachments/assets/1cf8a5fd-a9bb-4efe-9e50-24eb944bd971" width="100%">
 </div>

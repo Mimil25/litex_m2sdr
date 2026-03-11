@@ -2,9 +2,9 @@
  *
  * M2SDR Linux Driver.
  *
- * This file is part of LiteX-M2SDR project.
+ * This file is part of LiteX-M2SDR.
  *
- * Copyright (c) 2024-2025 Enjoy-Digital <enjoy-digital.fr>
+ * Copyright (c) 2024-2026 Enjoy-Digital <enjoy-digital.fr>
  *
  */
 
@@ -495,20 +495,29 @@ static irqreturn_t litepcie_interrupt(int irq, void *data)
 	/* Handle SATA interrupts */
 #ifdef SATA_SECTOR2MEM_INTERRUPT
 	if (irq_vector & (1 << SATA_SECTOR2MEM_INTERRUPT)) {
-		litesata_msi_signal_reader();
 		clear_mask |= (1 << SATA_SECTOR2MEM_INTERRUPT);
 	}
 #endif
 
 #ifdef SATA_MEM2SECTOR_INTERRUPT
 	if (irq_vector & (1 << SATA_MEM2SECTOR_INTERRUPT)) {
-		litesata_msi_signal_writer();
 		clear_mask |= (1 << SATA_MEM2SECTOR_INTERRUPT);
 	}
 #endif
 
+	/* Clear ALL interrupts */
 #ifdef CSR_PCIE_MSI_CLEAR_ADDR
 	litepcie_writel(s, CSR_PCIE_MSI_CLEAR_ADDR, clear_mask);
+#endif
+
+	/* Signal SATA completions */
+#ifdef SATA_SECTOR2MEM_INTERRUPT
+	if (irq_vector & (1 << SATA_SECTOR2MEM_INTERRUPT))
+		litesata_msi_signal_reader();
+#endif
+#ifdef SATA_MEM2SECTOR_INTERRUPT
+	if (irq_vector & (1 << SATA_MEM2SECTOR_INTERRUPT))
+		litesata_msi_signal_writer();
 #endif
 
 	return IRQ_HANDLED;
@@ -1076,7 +1085,32 @@ static void litepcie_free_chdev(struct litepcie_device *s)
 #define TIME_CONTROL_SYNC_ENABLE  (1 << CSR_TIME_GEN_CONTROL_SYNC_ENABLE_OFFSET)
 
 /* PTM Offset in Nanoseconds (Adjust based on calibration) */
-#define PTM_OFFSET_NS (-500) /* FIXME: Adjust based on calibration */
+static s64 ptm_offset_ns = -500;
+
+static int param_set_s64(const char *val, const struct kernel_param *kp)
+{
+	s64 tmp;
+	int ret = kstrtos64(val, 0, &tmp);
+
+	if (ret)
+		return ret;
+
+	*(s64 *)kp->arg = tmp;
+	return 0;
+}
+
+static int param_get_s64(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "%lld\n", (long long)*(s64 *)kp->arg);
+}
+
+static const struct kernel_param_ops param_ops_s64 = {
+	.set = param_set_s64,
+	.get = param_get_s64,
+};
+
+module_param_cb(ptm_offset_ns, &param_ops_s64, &ptm_offset_ns, 0644);
+MODULE_PARM_DESC(ptm_offset_ns, "PTM offset in nanoseconds applied to time read/write");
 
 /* PTM Control Register Flags */
 #define PTM_CONTROL_ENABLE  (1 << CSR_PTM_REQUESTER_CONTROL_ENABLE_OFFSET)
@@ -1122,7 +1156,7 @@ static int litepcie_read_time(struct litepcie_device *dev, struct timespec64 *ts
 		(litepcie_readl(dev, TIME_CONTROL_READ_TIME_L) & 0xffffffff));
 
 	/* Adjust the value by subtracting PTM offset */
-	value = value - PTM_OFFSET_NS;
+	value = value - ptm_offset_ns;
 
 	/* Convert the value to timespec64 format */
 	rd_ts = ns_to_timespec64(value);
@@ -1138,7 +1172,7 @@ static int litepcie_write_time(struct litepcie_device *dev, const struct timespe
 	s64 value = timespec64_to_ns(ts);
 
 	/* Adjust the value by adding PTM offset */
-	value = value + PTM_OFFSET_NS;
+	value = value + ptm_offset_ns;
 
 	/* Write the low and high parts of the time value */
 	litepcie_writel(dev, TIME_CONTROL_WRITE_TIME_L, (value >>  0) & 0xffffffff);
@@ -1602,7 +1636,7 @@ if (litepcie_soc_has_sata(litepcie_dev)) {
 			litepcie_dev->sata = sata_pdev;
 		}
 
-#ifndef LITESATA_FORCE_POLLING
+#if (LITESATA_FORCE_POLLING == 0)
         /* Enable LiteSATA completion MSIs */
 #ifdef SATA_SECTOR2MEM_INTERRUPT
         litepcie_enable_interrupt(litepcie_dev, SATA_SECTOR2MEM_INTERRUPT);

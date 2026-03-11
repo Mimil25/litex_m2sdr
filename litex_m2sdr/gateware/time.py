@@ -1,7 +1,7 @@
 #
 # This file is part of LiteX-M2SDR.
 #
-# Copyright (c) 2024-2025 Enjoy-Digital <enjoy-digital.fr>
+# Copyright (c) 2024-2026 Enjoy-Digital <enjoy-digital.fr>
 # SPDX-License-Identifier: BSD-2-Clause
 
 from migen import *
@@ -16,7 +16,8 @@ from litex.soc.interconnect import stream
 
 class TimeGenerator(LiteXModule):
     def __init__(self, clk, clk_freq, init=0, with_csr=True):
-        assert 1e9/clk_freq == int(1e9/clk_freq)
+        time_inc_reset = int(round((1e9/clk_freq) * (1 << 24)))
+        assert time_inc_reset < (1 << 32)
         self.enable          = Signal()
         self.sync_enable     = Signal()
         self.write           = Signal()
@@ -24,7 +25,8 @@ class TimeGenerator(LiteXModule):
         self.time            = Signal(64)
         self.time_adjustment = Signal(64)
         self.time_change     = Signal()
-        self.time_inc        = Signal(32, reset=int(1e9/clk_freq) << 24)
+        # Time increment in ns per tick (Q8.24 fixed-point). Allows fractional ns.
+        self.time_inc        = Signal(32, reset=time_inc_reset)
 
         # Time Sync Interface.
         self.time_sync    = Signal()
@@ -40,7 +42,7 @@ class TimeGenerator(LiteXModule):
         self.cd_time = ClockDomain()
         self.comb += self.cd_time.clk.eq(clk)
 
-        # Time Handling.
+        # Time Handling (Q8.24 fractional ns).
         self.sync.time += [
             # Disable: Reset Time to 0.
             If(~self.enable,
@@ -54,7 +56,7 @@ class TimeGenerator(LiteXModule):
             ).Elif(self.sync_enable & self.time_sync,
                 time.eq(((self.time_seconds + 1)* int(1e9))),
                 frac.eq(0),
-            # Increment.
+            # Increment (fractional).
             ).Else(
                 Cat(frac, time).eq(Cat(frac, time) + self.time_inc),
             ),
@@ -143,3 +145,24 @@ class TimeGenerator(LiteXModule):
         )
         self.time        = time
         self.time_change = time_change
+
+
+class TimeNsToPS(LiteXModule):
+    """Convert nanoseconds timestamp to (seconds, picosecond-fraction) fields for VRT TSF=REAL_TIME."""
+    def __init__(self, time_ns, time_s, time_ps):
+        assert len(time_ns) == 64
+        assert len(time_s) == 32
+        assert len(time_ps) == 64
+
+        time_ns_reg = Signal(64)
+        product_s1e9 = Signal(64)
+        remainder_ns = Signal(32)
+        fraction_ps = Signal(64)
+
+        self.sync += [
+            time_ns_reg.eq(time_ns),
+            product_s1e9.eq(time_s * 1_000_000_000),
+            remainder_ns.eq(time_ns_reg - product_s1e9),
+            fraction_ps.eq(remainder_ns * 1000),
+        ]
+        self.comb += time_ps.eq(fraction_ps)

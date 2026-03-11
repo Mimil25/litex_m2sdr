@@ -4,6 +4,37 @@
 
 The LiteX M2 SDR project is actively under development and does not yet have formal releases. However, we maintain this changelog to allow users and potential clients of the hardware to follow the project's progress and stay up to date with the latest features and improvements. The updates below are summarized by quarter, highlighting major advancements to provide a clear overview of the project's evolution.
 
+[> 2026 Q1 (Jan - Mar)
+----------------------
+**CI Hardening, Broader Simulation Coverage, and PCIe Reliability**
+- Expanded gateware simulation coverage with additional edge cases, randomized backpressure, mode toggles, and framing invariants.
+- Consolidated CI simulation execution into a single gateware test suite for simpler maintenance and reporting.
+- Added CI software build checks for Linux kernel driver, user-space utilities, and SoapySDR module compilation.
+- Improved test organization by moving board-dependent scripts to `scripts/` and keeping CI-safe simulations in `test/`.
+- Added per-test docstrings and aligned test separators/comments with the project code style.
+- Integrated optional PCIe link reset workaround logic to improve link bring-up robustness on some host platforms.
+- Refreshed README and kernel documentation (CI badge, paths, module naming, and test structure clarifications).
+- Introduced the public `libm2sdr` C API, including shared library/pkg-config packaging, example programs, and integration as the common host layer for user utilities and the SoapySDR module.
+- Introduced the `m2sdr_scan` wideband scanner utility with an ImGui/SDL/OpenGL UI, then reorganized its UI support files under `software/user/scan_ui/` to keep the user utility root cleaner.
+- Introduced a shared user-space CLI/device handling layer so utilities now build device identifiers consistently across PCIe and Etherbone modes.
+- Harmonized option naming across RF/streaming/control utilities around shared long-form arguments such as `--device`, `--sample-rate`, `--rx-freq`, `--tx-freq`, and `--format`.
+- Extended `m2sdr_scan` with preset save/load support and a headless export mode for CSV/PPM capture without launching the SDL/ImGui interface.
+- Removed the White Rabbit patch-preflight flow from gateware build scripts, simplifying setup for the current clocking-first White Rabbit usage.
+- Hardened `libm2sdr` API validation and error reporting with stricter device parsing/stream checks and new public error categories (`parse`, `range`, `state`).
+- Improved `libm2sdr` backend integration with explicit transport/handle accessors (`m2sdr_get_transport`, `m2sdr_get_eb_handle`) while preserving legacy handle compatibility.
+- Refined `libm2sdr` RF and streaming internals with per-device RF state ownership, safer DMA header access, and documented 16-byte wire header layout.
+- Added focused `libm2sdr` unit coverage and CI lanes for unit checks, LiteEth-mode checks, sanitizers, and `cppcheck`.
+
+[> 2025 Q4 (Oct - Dec)
+----------------------
+**PTM Time Sync, SATA Host Integration, and Clocking Refinements**
+- Integrated PCIe PTM/PTP support across gateware and kernel/user software, including improved hardware time generation and reporting.
+- Added/adapted LiteSATA Linux block-driver support for host operation over PCIe DMA and improved stability in polling/IRQ paths.
+- Enhanced kernel compatibility and build robustness across Linux versions (including newer and older kernel API changes).
+- Improved Ethernet and SoapySDR paths with UDP RX/TX integration, stream cleanup fixes, and safer DMA buffer teardown.
+- Expanded SI5351/RefClk handling with cleaned default configurations, additional 40MHz options, and source/frequency selection support.
+- Improved target/debug workflows with PCIe probe visibility, LTSSM test support, and configurable probe depth.
+
 [> 2025 Q3 (Jul - Sep)
 ----------------------
 **White Rabbit Integration, FM Utilities, and LiteI2C Migration**

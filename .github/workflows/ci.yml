@@ -1,0 +1,172 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  software-build:
+    runs-on: ubuntu-22.04
+    steps:
+      # Checkout Repository
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Install Tools
+      - name: Install Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            make \
+            wget \
+            cmake \
+            pkg-config \
+            libsoapysdr-dev \
+            libsndfile1-dev \
+            libsamplerate0-dev
+
+      - name: Build Kernel Module
+        run: |
+          cd litex_m2sdr/software/kernel
+          if [ ! -d "/lib/modules/$(uname -r)/build" ]; then
+            sudo apt-get install -y "linux-headers-$(uname -r)"
+          fi
+          make clean all
+          test -f m2sdr.ko
+
+      - name: Build User Utilities
+        run: |
+          cd litex_m2sdr/software/user
+          make clean all
+          test -x m2sdr_util
+          test -x m2sdr_rf
+          test -x m2sdr_gen
+          test -x m2sdr_play
+          test -x m2sdr_record
+          test -x m2sdr_gpio
+          test -x m2sdr_fm_tx
+          test -x m2sdr_fm_rx
+          test -x m2sdr_sata
+          for bin in m2sdr_util m2sdr_rf m2sdr_gen m2sdr_play m2sdr_record m2sdr_gpio m2sdr_fm_tx m2sdr_fm_rx m2sdr_sata; do
+            ldd "$bin" | tee "/tmp/ldd_${bin}.txt"
+            ! grep -q "not found" "/tmp/ldd_${bin}.txt"
+          done
+
+      - name: Build SoapySDR Module
+        run: |
+          cd litex_m2sdr/software/soapysdr
+          cmake -S . -B build
+          cmake --build build -j"$(nproc)"
+          test -f build/libSoapyLiteXM2SDR.so
+          ldd build/libSoapyLiteXM2SDR.so | tee /tmp/ldd_soapylitexm2sdr.txt
+          ! grep -q "not found" /tmp/ldd_soapylitexm2sdr.txt
+
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      # Checkout Repository
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Install Tools
+      - name: Install Tools
+        run: |
+          sudo apt-get install make wget
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: "pip"
+          cache-dependency-path: "setup.py"
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest
+
+      - name: Run LiteX installation
+        run: |
+          mkdir repos
+          pushd repos
+            wget https://raw.githubusercontent.com/enjoy-digital/litex/refs/heads/master/litex_setup.py
+            python3 litex_setup.py --config=standard --init --install --user
+          popd
+
+      - name: Tag build with version information
+        run: |
+          rm -rf build
+          mkdir -p build
+          git describe --tags --always > build/VERSION
+          git rev-parse HEAD > build/COMMIT
+
+      - name: Build LiteX M.2 SDR HDL framework releases
+        run: |
+          ./release.py --nobuild
+
+      - name: Checkout LiteX-WR-NIC (for WR smoke tests)
+        run: |
+          git clone --depth=1 https://github.com/enjoy-digital/litex_wr_nic.git /tmp/litex_wr_nic
+
+      - name: Run White Rabbit integration smoke tests
+        env:
+          LITEX_WR_NIC_DIR: /tmp/litex_wr_nic/litex_wr_nic
+        run: |
+          # Ensure deterministic WR smoke tests: remove any local wr-cores left by prior steps.
+          rm -rf wr-cores
+
+          # WR must fail on M.2-only variant (no baseboard SFP resources).
+          if ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=m2 2> /tmp/wr_variant.err; then
+            echo "Expected WR+m2 variant check to fail, but command succeeded."
+            exit 1
+          fi
+          grep -q "only supported with --variant=baseboard" /tmp/wr_variant.err
+
+          # WR baseboard smoke tests (elaboration-only, no P&R):
+          # - auto SFP selection from board resources
+          # - explicit SFP index selection
+          rm -rf wr-cores
+          ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard
+          rm -rf wr-cores
+          ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard --wr-sfp=1
+
+          # WR stale local wr-cores checkout smoke test.
+          rm -rf wr-cores
+          mkdir -p wr-cores
+          if ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard 2> /tmp/wr_stale.err; then
+            echo "Expected stale wr-cores layout check to fail, but command succeeded."
+            exit 1
+          fi
+          grep -q "Incompatible local 'wr-cores' tree detected" /tmp/wr_stale.err
+
+          # WR SHA mismatch smoke test.
+          rm -rf wr-cores
+          mkdir -p wr-cores/modules/wrc_core
+          printf '%s\n' 'mux_class_i(1) => x"ff");' > wr-cores/modules/wrc_core/xwr_subsystem.vhd
+          git -C wr-cores init -q
+          git -C wr-cores add modules/wrc_core/xwr_subsystem.vhd
+          git -C wr-cores -c user.name=ci -c user.email=ci@example.com commit -q -m "init wr-cores"
+          if ./litex_m2sdr.py --with-pcie --with-white-rabbit --variant=baseboard 2> /tmp/wr_sha.err; then
+            echo "Expected wr-cores SHA mismatch check to fail, but command succeeded."
+            exit 1
+          fi
+          grep -q "Local wr-cores SHA mismatch" /tmp/wr_sha.err
+          rm -rf wr-cores
+
+      - name: Run gateware simulation tests
+        run: |
+          python3 -m pytest -v test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: litex_m2sdr_hdl
+          path: |
+            build/VERSION
+            build/COMMIT
+            build/*.zip

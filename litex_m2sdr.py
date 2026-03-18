@@ -62,6 +62,7 @@ from litex_m2sdr.gateware.gpio        import GPIO
 from litex_m2sdr.gateware.loopback    import TXRXLoopback
 from litex_m2sdr.gateware.rfic        import RFICDataPacketizer
 from litex_m2sdr.gateware.vrt         import VRTSignalPacketStreamer
+from litex_m2sdr.gateware.auxclk_phase_sampler import AuxClkPhaseSampler
 
 from litex_m2sdr.software import generate_litepcie_software
 
@@ -143,7 +144,7 @@ class CRG(LiteXModule):
             # DMTD MMCM (62.5MHz).
             self.dmtd_mmcm = S7MMCM(speedgrade=-3, fractional=False)
             self.comb += self.dmtd_mmcm.reset.eq(self.rst)
-            self.dmtd_mmcm.register_clkin(ClockSignal("clk100"), 100e6)
+            self.dmtd_mmcm.register_clkin(ClockSignal("clk200"), 200e6)
             self.dmtd_mmcm.create_clkout(self.cd_clk_62m5_dmtd, 62.5e6, margin=0)
             self.dmtd_mmcm.expose_dps("clk200", with_csr=False)
             self.dmtd_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
@@ -214,10 +215,10 @@ class BaseSoC(SoCMini):
         with_eth               = False, eth_sfp=0, eth_phy="1000basex", eth_local_ip="192.168.1.50", eth_udp_port=2345,
         with_eth_vrt           = False, vrt_dst_ip="239.168.1.100", vrt_dst_port=4991,
         with_sata              = False, sata_gen=2,
-        with_white_rabbit      = False, wr_sfp=None, wr_dac_bits=16, wr_firmware=None,
+        with_white_rabbit      = False, wr_sfp=None, wr_dac_bits=16, wr_firmware=None, with_adc_sync=False, with_datapath_sync=False,
         wr_nic_dir             = None,
         wr_ext_clk10_port      = None,  wr_ext_clk10_period=100.0, wr_ext_clk10_name="wr_ext_clk10",
-        with_jtagbone          = True,
+        with_jtagbone          = False,
         with_gpio              = False,
         with_rfic_oversampling = False,
     ):
@@ -733,7 +734,6 @@ class BaseSoC(SoCMini):
 
                 # Board name.
                 board_name       = "SAWR",
-                dac_bits = wr_dac_bits,
 
                 # Main/DMTD PLL.
                 dac_bits = wr_dac_bits,
@@ -758,15 +758,7 @@ class BaseSoC(SoCMini):
                 wb_slave_origin = 0x0004_0000,
                 wb_slave_size   = 0x0004_0000
             )
-            
             self.comb += self.pcie_dma0.synchronizer.pps.eq(self.pps_out_pulse)
-
-            if with_adc_sync:
-                platform.add_extension([
-                    ("wr_clk_out", 0, Pins("V13"), IOStandard("LVCMOS33")),
-                ])
-                self.ad9361.add_sync_in_gpio(self.pps_out, platform.request('wr_clk_out'))
-
             LiteXWRNICSoC.add_sources(self)
 
             # Clk10M Generator.
@@ -823,13 +815,6 @@ class BaseSoC(SoCMini):
                 pll.register_clkin(clk_fb, 10e6)
                 pll.create_clkout(self.cd_fb62_5, 62.5e6, margin=0)
 
-                
-                # self.deterministic_mmcm = DeterministicMMCM(platform, 'fb62_5')
-                # self.comb += self.deterministic_mmcm.clkin_10m.eq(clk_fb)
-                # self.comb += self.deterministic_mmcm.rst.eq(~ self.ad_init_done.fields.done)
-                # self.comb += self.deterministic_mmcm.ppsin.eq(self.pps_out_pulse)
-
-
                 dac_aux_clk_data = Signal(wr_dac_bits)
                 dac_aux_clk_load = Signal()
                 self.lock_sweep = Signal()
@@ -838,20 +823,17 @@ class BaseSoC(SoCMini):
                         clk_fb = self.cd_fb62_5.clk,
                         dac_aux_load = dac_aux_clk_load,
                         dac_aux_data = dac_aux_clk_data,
-                        lock_sweep = self.pps_out_pulse,
+                        lock_sweep = self.lock_sweep,
                         lock_sweep_phase = self.lock_sweep_phase,
                         )
                 
-                platform.add_source("litex_m2sdr/gateware/refclk_phase_sampler_10m.vhd")
-                self.phase_sampler = Instance('refclk_phase_sampler_10m',
-                                    i_clk_10m_i           = clk_fb,
-                                    i_clk_62m5_i          = ClockSignal('wr'),
-                                    i_pps_csync_i         = self.pps_out_pulse,
+                self.phase_sampler = ClockDomainsRenamer('wr')(AuxClkPhaseSampler(10e6))
+                self.comb += self.phase_sampler.aux_clk.eq(clk_fb)
+                self.comb += self.phase_sampler.csync_pps.eq(self.pps_out_pulse)
+                self.comb += self.lock_sweep_phase.eq(self.phase_sampler.locksweep_phase)
+                self.comb += self.lock_sweep.eq(self.phase_sampler.locksweep_phase_new)
 
-                                    o_lock_sweep_o        = self.lock_sweep,
-                                    o_lock_sweep_phase_o  = self.lock_sweep_phase,
-                                    #o_lock_sweep_pattern_o  = self.locksweep_pattern,
-                                )
+
                 self.locksweep_stat = CSRStatus(fields=[
                     CSRField("done", size=1, offset=0, values=[
                         ("``0b0``", ""),
@@ -859,7 +841,6 @@ class BaseSoC(SoCMini):
                     ]),
                     CSRField("phase", size=5, offset=1),
                 ])
-                self.comb += self.locksweep_stat.fields.done.eq(self.lock_sweep)
                 self.comb += self.locksweep_stat.fields.phase.eq(self.lock_sweep_phase)
                 
 
@@ -940,12 +921,12 @@ class BaseSoC(SoCMini):
             ]
 
         # Async Crossings to External RF/PPS Clocks (CDC-only paths).
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "clk100")
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "si5351_clk0")
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "si5351_clk1")
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "sync_clk_in")
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "rfic_clk")
-        platform.add_false_path_constraints_by_name("*crg_clkout0", "ad9361_rfic_rx_clk_p")
+        platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "clk100")
+        platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "si5351_clk0")
+        platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "si5351_clk1")
+        # platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "sync_clk_in")
+        platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "rfic_clk")
+        platform.add_false_path_constraints_by_name("*crg_s7mmcm0_clkout0", "ad9361_rfic_rx_clk_p")
 
         # External Async Inputs (CDC/UART/reset/status paths only).
         platform.add_platform_command(
@@ -978,7 +959,7 @@ class BaseSoC(SoCMini):
         # PCIe: keep CRG <-> PCIe pclk asynchronous and ignore 125/250MHz mux alternatives.
         if with_pcie:
             false_paths = [
-                ("{{*crg_clkout0}}",      "{{*s7pciephy_clkout3}}"),
+                ("{{*crg_s7mmcm0_clkout0}}",      "{{*s7pciephy_clkout3}}"),
                 ("{{*s7pciephy_clkout0}}", "{{*s7pciephy_clkout1}}"),
             ]
             for clk0, clk1 in false_paths:
@@ -1170,8 +1151,8 @@ def main():
     parser.add_argument("--wr-sfp",              default=None, type=int,                 help="White Rabbit SFP (default: auto-select first available).", choices=[0, 1])
     parser.add_argument("--wr-dac-bits",         default=16, type=int,                   help="White Rabbit MMCM phase-shift control word width (in bits).")
     parser.add_argument("--wr-nic-dir",          default=os.environ.get("LITEX_WR_NIC_DIR"), help="Path to litex_wr_nic checkout (or set LITEX_WR_NIC_DIR).")
-    parser.add_argument("--wr-firmware",         default=None,                           help="Path to WR firmware BRAM image (e.g. .../firmware/spec_a7_wrc.bram).")
-    parser.add_argument("--wr-firmware-target",  default="acorn",                        help="WR firmware build target passed to build.py (when --build).")
+    parser.add_argument("--wr-firmware",         default=None,                           help="Path to WR firmware BRAM image (e.g. .../firmware/m2sdr_wrc.bram).")
+    parser.add_argument("--wr-firmware-target",  default="m2sdr",                        help="WR firmware build target passed to build.py (when --build).")
     parser.add_argument("--wr-status",           action="store_true",                    help="Print resolved WR environment status.")
     parser.add_argument("--wr-ext-clk10-port",   default=None,                           help="Vivado port for external 10MHz clock constraint (e.g. clk10m_in).")
     parser.add_argument("--wr-ext-clk10-period", default=100.0, type=float,              help="External 10MHz clock period in ns for constraint.")

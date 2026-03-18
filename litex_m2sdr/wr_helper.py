@@ -20,7 +20,7 @@ WR_NIC_DIR_CANDIDATE_PATTERNS = (
 )
 
 WR_FIRMWARE_BUILD_SCRIPT_REL = os.path.join("firmware", "build.py")
-WR_FIRMWARE_IMAGE_REL        = os.path.join("firmware", "spec_a7_wrc.bram")
+WR_FIRMWARE_IMAGE_REL        = os.path.join("firmware", "m2sdr_wrc.bram")
 WR_COMMON_REL                = os.path.join("gateware", "wr_common.py")
 
 WR_CORES_DIRNAME        = "wr-cores"

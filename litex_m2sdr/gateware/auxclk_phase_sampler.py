@@ -30,7 +30,7 @@ class AuxClkPhaseSampler(LiteXModule):
         self.aux_clk = Signal() # aux clk input
         self.csync_pps = Signal() # PPS input
         
-        size_phase = 5 # enouth for 25 (< 32) phases
+        size_phase = 8
         self.locksweep_phase = Signal(size_phase)
         self.locksweep_phase_new = Signal()
 
@@ -43,32 +43,20 @@ class AuxClkPhaseSampler(LiteXModule):
                 o = sampled,
                 )
 
+        shift_reg = Signal(m_a)
+        self.sync += shift_reg.eq(Cat(shift_reg[1:], sampled))
+
         pattern = Signal(m_a)
         counter = Signal(size_phase)
-        self.fsm = FSM(reset_state='IDLE')
-        self.fsm.act('IDLE',
-                     NextValue(self.locksweep_phase_new, 0),
-                     If(self.csync_pps,
-                        NextValue(counter, m_a),
-                        NextState('SAMPLING'),
-                        )
-                     )
-        self.fsm.act('SAMPLING',
-                     If(counter == 0,
-                        NextState('MATCH_PATTERN'),
-                        NextValue(self.locksweep_phase, 0), # reset the invalid value
-                     ).Else(
-                         NextValue(counter, counter - 1),
-                         NextValue(pattern, Cat(pattern[1:], sampled)),
-                         )
-                     )
-        self.fsm.act('MATCH_PATTERN',
-                     *(If((pattern == val_for_pattern(lut[i*2][1])) | (pattern == val_for_pattern(lut[i*2-1][1])),
-                          NextValue(self.locksweep_phase, i + 1),
-                          ) for i in range(m_a)),
-                     NextValue(self.locksweep_phase_new, 1),
-                     NextState('IDLE'),
-                     )
+        self.sync += counter.eq(Mux((counter == 0) | self.csync_pps,
+                                    m_a - 1,
+                                    counter - 1))
+        
+        self.sync += If(counter == 0,
+                        pattern.eq(shift_reg))
+
+        self.sync += [If((pattern == val_for_pattern(lut[i*2][1])) | (pattern == val_for_pattern(lut[i*2-1][1])),
+                          self.locksweep_phase.eq(i + 1)) for i in range(m_a)]
 
                      
 # ------------- Below is not relevent for LiteX

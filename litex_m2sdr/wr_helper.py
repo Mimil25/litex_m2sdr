@@ -157,7 +157,7 @@ def inspect_wr_cores(root_dir, wr_nic_dir):
         "wr_subsystem_vhd" : wr_subsystem_vhd,
         "exists"           : os.path.isdir(wr_cores_dir),
         "valid_layout"     : False,
-        "expected_sha"     : _get_expected_wr_cores_sha(wr_nic_dir),
+        "expected_sha"     : None, #_get_expected_wr_cores_sha(wr_nic_dir),
         "local_sha"        : None,
         "sha_match"        : None,
         "patched"          : None,

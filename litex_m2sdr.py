@@ -797,6 +797,49 @@ class BaseSoC(SoCMini):
             ]
 
             if with_datapath_sync:
+                
+
+                # test_cd = ClockDomain('test')
+                # test62_cd = ClockDomain('test62')
+                # test_dac_aux_clk_data = Signal(wr_dac_bits)
+                # test_dac_aux_clk_load = Signal()
+                # self.test_lock_sweep_phase = Signal(16)
+                # LiteXWRNICSoC.add_aux_clock(self,
+                #         clk_fb = test62_cd.clk,
+                #         dac_aux_load = test_dac_aux_clk_load,
+                #         dac_aux_data = test_dac_aux_clk_data,
+                #         locksweep_phase = self.test_lock_sweep_phase,
+                #         )
+                # 
+                # self.test_phase_sampler = ClockDomainsRenamer('wr')(AuxClkPhaseSampler(10e6))
+                # self.comb += self.test_phase_sampler.aux_clk.eq(test_cd.clk)
+                # self.comb += self.test_phase_sampler.csync_pps.eq(self.pps_out_pulse)
+                # self.comb += self.test_lock_sweep_phase.eq(self.test_phase_sampler.locksweep_phase)
+
+                # # AD9361 MMCM (10MHz)
+                # self.test_mmcm = S7MMCM(speedgrade=-3, fractional=False)
+                # self.test_mmcm.register_clkin(ClockSignal('clk200'), 200e6)
+                # self.test_mmcm.create_clkout(test_cd, 10e6, margin=0)
+                # self.test_mmcm.create_clkout(test62_cd, 62.5e6, margin=0)
+                # self.test_mmcm.expose_dps("clk200", with_csr=False)
+                # self.test_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
+                # self.test_mmcm.params.update(p_CLKOUT1_USE_FINE_PS="TRUE")
+
+                # self.test_mmcm_ps_gen = PSGen(
+                #      cd_psclk    = "clk200",
+                #      cd_sys      = "wr",
+                #      ctrl_size   = wr_dac_bits,
+                #      )
+                # self.comb += [
+                #     self.test_mmcm_ps_gen.ctrl_data.eq(test_dac_aux_clk_data),
+                #     self.test_mmcm_ps_gen.ctrl_load.eq(test_dac_aux_clk_load),
+                #     self.test_mmcm.psen.eq(self.test_mmcm_ps_gen.psen),
+                #     self.test_mmcm.psincdec.eq(self.test_mmcm_ps_gen.psincdec),
+                # ]
+
+
+
+
                 self.ad_init_done = CSRStorage(fields=[
                     CSRField("done", size=1, offset=0, values=[
                         ("``0b0``", ""),
@@ -808,7 +851,7 @@ class BaseSoC(SoCMini):
                 self.cd_fb62_5 = ClockDomain()
 
                 self.comb += clk_fb.eq(self.ad9361.phy.rx_fb_clk)
-                platform.add_period_constraint(clk_fb, 100) # 100ns <-> 10 MHz
+                platform.add_period_constraint(clk_fb, 50) # 100ns <-> 10 MHz
                 
                 self.pll = pll = S7MMCM(speedgrade=-2)
                 self.comb += pll.reset.eq(~ self.ad_init_done.fields.done)
@@ -817,29 +860,22 @@ class BaseSoC(SoCMini):
 
                 dac_aux_clk_data = Signal(wr_dac_bits)
                 dac_aux_clk_load = Signal()
-                self.lock_sweep = Signal()
-                self.lock_sweep_phase = Signal(15)
+                self.lock_sweep_phase = Signal(16)
                 LiteXWRNICSoC.add_aux_clock(self,
                         clk_fb = self.cd_fb62_5.clk,
                         dac_aux_load = dac_aux_clk_load,
                         dac_aux_data = dac_aux_clk_data,
-                        lock_sweep = self.lock_sweep,
-                        lock_sweep_phase = self.lock_sweep_phase,
+                        locksweep_phase = self.lock_sweep_phase,
                         )
                 
                 self.phase_sampler = ClockDomainsRenamer('wr')(AuxClkPhaseSampler(10e6))
                 self.comb += self.phase_sampler.aux_clk.eq(clk_fb)
                 self.comb += self.phase_sampler.csync_pps.eq(self.pps_out_pulse)
                 self.comb += self.lock_sweep_phase.eq(self.phase_sampler.locksweep_phase)
-                self.comb += self.lock_sweep.eq(self.phase_sampler.locksweep_phase_new)
 
 
                 self.locksweep_stat = CSRStatus(fields=[
-                    CSRField("done", size=1, offset=0, values=[
-                        ("``0b0``", ""),
-                        ("``0b1``", ""),
-                    ]),
-                    CSRField("phase", size=5, offset=1),
+                    CSRField("phase", size=8, offset=0),
                 ])
                 self.comb += self.locksweep_stat.fields.phase.eq(self.lock_sweep_phase)
                 
@@ -871,8 +907,8 @@ class BaseSoC(SoCMini):
                     ("wr_clk_out", 0, Pins("V13"), IOStandard("LVCMOS33")),
                 ])
                 
+                #self.comb += platform.request('wr_clk_out').eq(test_cd.clk)
                 self.comb += platform.request('wr_clk_out').eq(clk_fb)
-                #self.comb += platform.request('wr_clk_out').eq(ClockSignal('fb62_5'))
 
 
 
@@ -1099,7 +1135,7 @@ class BaseSoC(SoCMini):
             #self.ad9361.prbs_rx.fields.synced,
             #self.debug,
             self.pps_out_pulse,
-            #self.lock_sweep_phase
+            self.lock_sweep_phase
         ]
         self.analyzer = LiteScopeAnalyzer(analyzer_signals,
             depth        = depth,

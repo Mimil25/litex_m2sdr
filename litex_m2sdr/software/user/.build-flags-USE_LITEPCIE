@@ -1,0 +1,4 @@
+INTERFACE=USE_LITEPCIE
+CFLAGS=-O3 -Wall -g -I../kernel -Ilibliteeth -Iliblitepcie -Ilibm2sdr -Iad9361 -Iscan_ui -MMD -fPIC -DUSE_LITEPCIE 
+CXXFLAGS=-O3 -Wall -g -I../kernel -Ilibliteeth -Iliblitepcie -Ilibm2sdr -Iad9361 -Iscan_ui -MMD -fPIC -DUSE_LITEPCIE  -I. -Icimgui -Icimgui/imgui -Icimgui/imgui/backends -DCIMGUI_USE_SDL2 -DCIMGUI_USE_OPENGL3
+LDFLAGS=-g  

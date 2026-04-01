@@ -29,8 +29,8 @@
 /*---------*/
 
 #define AD9361_GPIO_RESET_PIN 0
-#define M2SDR_TX_GAIN_MIN_DB -89
-#define M2SDR_TX_GAIN_MAX_DB   0
+#define M2SDR_TX_ATT_MIN_DB    0
+#define M2SDR_TX_ATT_MAX_DB   89
 #define M2SDR_RX_GAIN_MIN_DB   0
 #define M2SDR_RX_GAIN_MAX_DB  76
 
@@ -128,7 +128,7 @@ static int m2sdr_validate_config_values(const struct m2sdr_config *cfg)
         return M2SDR_ERR_RANGE;
     if (cfg->tx_freq <= 0 || cfg->rx_freq <= 0)
         return M2SDR_ERR_RANGE;
-    if (cfg->tx_gain < M2SDR_TX_GAIN_MIN_DB || cfg->tx_gain > M2SDR_TX_GAIN_MAX_DB)
+    if (cfg->tx_att < M2SDR_TX_ATT_MIN_DB || cfg->tx_att > M2SDR_TX_ATT_MAX_DB)
         return M2SDR_ERR_RANGE;
     if (cfg->rx_gain1 < M2SDR_RX_GAIN_MIN_DB || cfg->rx_gain1 > M2SDR_RX_GAIN_MAX_DB)
         return M2SDR_ERR_RANGE;
@@ -340,8 +340,21 @@ static int m2sdr_configure_frequencies(struct ad9361_rf_phy *phy, const struct m
 /* Apply TX attenuation and per-channel RX gains. */
 static int m2sdr_configure_gains(struct ad9361_rf_phy *phy, const struct m2sdr_config *cfg)
 {
-    M2SDR_LOGF("Setting TX Gain to %ld dB.\n", (long)cfg->tx_gain);
-    if (m2sdr_from_ad9361_rc(ad9361_set_tx_atten(phy, (uint32_t)(-cfg->tx_gain * 1000), 1, 1, 1)) != M2SDR_ERR_OK)
+    M2SDR_LOGF("Setting TX Attenuation to %ld dB.\n", (long)cfg->tx_att);
+    if (m2sdr_from_ad9361_rc(ad9361_set_tx_atten(phy, (uint32_t)(cfg->tx_att * 1000), 1, 1, 1)) != M2SDR_ERR_OK)
+        return M2SDR_ERR_IO;
+
+    if (!cfg->program_rx_gains) {
+        M2SDR_LOGF("Leaving RX gain mode and gains at AD9361 defaults.\n");
+        return M2SDR_ERR_OK;
+    }
+
+    /* The AD9361 only accepts explicit RX gain writes in manual gain-control
+     * mode. Only switch to MGC when the caller explicitly requested manual RX
+     * gains through the standalone RF configuration interface. */
+    if (m2sdr_from_ad9361_rc(ad9361_set_rx_gain_control_mode(phy, 0, RF_GAIN_MGC)) != M2SDR_ERR_OK)
+        return M2SDR_ERR_IO;
+    if (m2sdr_from_ad9361_rc(ad9361_set_rx_gain_control_mode(phy, 1, RF_GAIN_MGC)) != M2SDR_ERR_OK)
         return M2SDR_ERR_IO;
 
     M2SDR_LOGF("Setting RX Gain to %ld dB and %ld dB.\n",
@@ -478,9 +491,10 @@ void m2sdr_config_init(struct m2sdr_config *cfg)
     cfg->refclk_freq       = DEFAULT_REFCLK_FREQ;
     cfg->tx_freq           = DEFAULT_TX_FREQ;
     cfg->rx_freq           = DEFAULT_RX_FREQ;
-    cfg->tx_gain           = DEFAULT_TX_GAIN;
+    cfg->tx_att            = DEFAULT_TX_ATT;
     cfg->rx_gain1          = DEFAULT_RX_GAIN;
     cfg->rx_gain2          = DEFAULT_RX_GAIN;
+    cfg->program_rx_gains  = false;
     cfg->loopback          = DEFAULT_LOOPBACK;
     cfg->bist_tone_freq    = DEFAULT_BIST_TONE_FREQ;
     cfg->bist_tx_tone      = false;
@@ -684,9 +698,9 @@ int m2sdr_set_gain(struct m2sdr_dev *dev, enum m2sdr_direction direction, int64_
         return rc;
 
     if (direction == M2SDR_TX) {
-        if (gain < M2SDR_TX_GAIN_MIN_DB || gain > M2SDR_TX_GAIN_MAX_DB)
+        if (gain < M2SDR_TX_ATT_MIN_DB || gain > M2SDR_TX_ATT_MAX_DB)
             return M2SDR_ERR_RANGE;
-        if (m2sdr_from_ad9361_rc(ad9361_set_tx_atten(phy, (uint32_t)(-gain * 1000), 1, 1, 1)) != M2SDR_ERR_OK)
+        if (m2sdr_from_ad9361_rc(ad9361_set_tx_atten(phy, (uint32_t)(gain * 1000), 1, 1, 1)) != M2SDR_ERR_OK)
             return M2SDR_ERR_IO;
     } else {
         if (gain < M2SDR_RX_GAIN_MIN_DB || gain > M2SDR_RX_GAIN_MAX_DB)
@@ -718,8 +732,29 @@ int m2sdr_set_rx_gain(struct m2sdr_dev *dev, int64_t gain)
     return m2sdr_set_gain(dev, M2SDR_RX, gain);
 }
 
-/* Convenience wrapper for the TX gain setter. */
-int m2sdr_set_tx_gain(struct m2sdr_dev *dev, int64_t gain)
+int m2sdr_set_rx_gain_chan(struct m2sdr_dev *dev, unsigned channel, int64_t gain)
 {
-    return m2sdr_set_gain(dev, M2SDR_TX, gain);
+    struct ad9361_rf_phy *phy;
+    int rc;
+
+    if (!dev)
+        return M2SDR_ERR_INVAL;
+    if (channel > 1)
+        return M2SDR_ERR_RANGE;
+    if (gain < M2SDR_RX_GAIN_MIN_DB || gain > M2SDR_RX_GAIN_MAX_DB)
+        return M2SDR_ERR_RANGE;
+
+    rc = m2sdr_require_phy(dev, &phy);
+    if (rc != M2SDR_ERR_OK)
+        return rc;
+
+    if (m2sdr_from_ad9361_rc(ad9361_set_rx_rf_gain(phy, channel, gain)) != M2SDR_ERR_OK)
+        return M2SDR_ERR_IO;
+
+    return M2SDR_ERR_OK;
+}
+
+int m2sdr_set_tx_att(struct m2sdr_dev *dev, int64_t attenuation_db)
+{
+    return m2sdr_set_gain(dev, M2SDR_TX, attenuation_db);
 }

@@ -112,39 +112,6 @@ litex_m2sdr_device_desc_t spi_get_fd(const struct spi_device *spi)
     return it->second;
 }
 
-std::vector<std::string> split_list(const std::string &value)
-{
-    std::vector<std::string> out;
-    std::string token;
-    auto trim_token = [](const std::string &s) {
-        size_t start = 0;
-        size_t end = s.size();
-        while (start < end && std::isspace(static_cast<unsigned char>(s[start])))
-            start++;
-        while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1])))
-            end--;
-        return s.substr(start, end - start);
-    };
-    for (char ch : value) {
-        if (ch == ',') {
-            if (!token.empty()) {
-                std::string trimmed = trim_token(token);
-                if (!trimmed.empty())
-                    out.push_back(trimmed);
-            }
-            token.clear();
-            continue;
-        }
-        token.push_back(ch);
-    }
-    if (!token.empty()) {
-        std::string trimmed = trim_token(token);
-        if (!trimmed.empty())
-            out.push_back(trimmed);
-    }
-    return out;
-}
-
 uint8_t parse_agc_mode(const std::string &mode)
 {
     if (mode == "slow" || mode == "slowattack")
@@ -556,12 +523,15 @@ SoapyLiteXM2SDR::SoapyLiteXM2SDR(const SoapySDR::Kwargs &args)
     _ad9361_fir_profile = fir_profile_canonical;
     SoapySDR::logf(SOAPY_SDR_INFO, "AD9361 1x FIR profile: %s", _ad9361_fir_profile.c_str());
 
+    /* Expose only the board-connected RF ports. The broader AD9361 antenna
+     * enum remains available in the lower-level driver, but those names do not
+     * map cleanly to user-facing M2SDR connectors here. */
     _rx_antennas = {"A_BALANCED"};
     _tx_antennas = {"A"};
-    if (args.count("rx_antenna_list") > 0)
-        _rx_antennas = split_list(args.at("rx_antenna_list"));
-    if (args.count("tx_antenna_list") > 0)
-        _tx_antennas = split_list(args.at("tx_antenna_list"));
+    if (args.count("rx_antenna_list") > 0 || args.count("tx_antenna_list") > 0) {
+        throw std::runtime_error(
+            "Custom antenna lists are not supported; use RX=A_BALANCED and TX=A");
+    }
 
     _rx_agc_mode = RF_GAIN_SLOWATTACK_AGC;
     if (args.count("rx_agc_mode") > 0)
@@ -870,14 +840,17 @@ void SoapyLiteXM2SDR::setAntenna(
     const size_t channel,
     const std::string &name) {
     std::lock_guard<std::mutex> lock(_mutex);
+
+    /* Keep the Soapy-facing API aligned with the board RF connectors rather
+     * than exposing the full AD9361 port enum. */
     if (direction == SOAPY_SDR_RX) {
         if (!antenna_allowed(_rx_antennas, name))
-            throw std::runtime_error("Unsupported RX antenna: " + name);
+            throw std::runtime_error("Unsupported RX antenna: " + name + " (supported: A_BALANCED)");
         _rx_stream.antenna[channel] = name;
     }
     if (direction == SOAPY_SDR_TX) {
         if (!antenna_allowed(_tx_antennas, name))
-            throw std::runtime_error("Unsupported TX antenna: " + name);
+            throw std::runtime_error("Unsupported TX antenna: " + name + " (supported: A)");
         _tx_stream.antenna[channel] = name;
     }
 }
@@ -976,30 +949,33 @@ void SoapyLiteXM2SDR::setGain(
 
     /* TX */
     if (direction == SOAPY_SDR_TX) {
-        _tx_stream.gain[channel] = value;
-        double   att_db  = (value >= 0.0) ? value : -value;
-        /* Clarify interpretation */
-        if (value >= 0.0) {
-            SoapySDR::logf(SOAPY_SDR_DEBUG, "TX ch%zu: %.3f dB Attenuation", channel, att_db);
-        } else {
-            SoapySDR::logf(SOAPY_SDR_WARNING,
-                "TX ch%zu: negative gain value %.3f dB is deprecated; use ATT with positive dB",
-                channel, value);
+        if (value < 0.0) {
+            SoapySDR::logf(SOAPY_SDR_ERROR,
+                "TX ch%zu: attenuation must be positive; use ATT in dB", channel);
+            return;
         }
+        _tx_stream.gain[channel] = value;
+        SoapySDR::logf(SOAPY_SDR_DEBUG, "TX ch%zu: %.3f dB Attenuation", channel, value);
 
-        int rc = m2sdr_set_gain(_dev, M2SDR_TX, -att_db);
+        int rc = m2sdr_set_tx_att(_dev, value);
         if (rc != 0) {
-            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_gain(TX) failed: %s", m2sdr_strerror(rc));
+            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_tx_att(TX) failed: %s", m2sdr_strerror(rc));
         }
     }
 
     /* RX */
     if (SOAPY_SDR_RX == direction) {
+        uint8_t gc_mode = RF_GAIN_MGC;
         _rx_stream.gain[channel] = value;
+        ad9361_get_rx_gain_control_mode(ad9361_phy, channel, &gc_mode);
+        if (gc_mode != RF_GAIN_MGC) {
+            ad9361_set_rx_gain_control_mode(ad9361_phy, channel, RF_GAIN_MGC);
+            _rx_stream.gainMode[channel] = false;
+        }
         SoapySDR::logf(SOAPY_SDR_DEBUG, "RX ch%zu: %.3f dB Gain", channel, value);
-        int rc = m2sdr_set_gain(_dev, M2SDR_RX, value);
+        int rc = m2sdr_set_rx_gain_chan(_dev, (unsigned)channel, value);
         if (rc != 0) {
-            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_gain(RX) failed: %s", m2sdr_strerror(rc));
+            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_rx_gain_chan(RX) failed: %s", m2sdr_strerror(rc));
         }
     }
 }
@@ -1013,23 +989,11 @@ void SoapyLiteXM2SDR::setGain(
     /* TX */
     if (direction == SOAPY_SDR_TX) {
         if (name == "ATT") {
-            /* Positive attenuation in dB. */
-            _tx_stream.gain[channel] = -value;
-            SoapySDR::logf(SOAPY_SDR_DEBUG, "TX ch%zu: ATT %.3f dB Attenuation", channel, value);
-            int rc = m2sdr_set_gain(_dev, M2SDR_TX, -value);
-            if (rc != 0) {
-                SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_gain(TX) failed: %s", m2sdr_strerror(rc));
-            }
-            return;
-        }
-        if (name == "GAIN") {
-            /* Negative gain in dB. */
             _tx_stream.gain[channel] = value;
-            SoapySDR::logf(SOAPY_SDR_WARNING,
-                "TX ch%zu: GAIN is deprecated; use ATT with positive dB", channel);
-            int rc = m2sdr_set_gain(_dev, M2SDR_TX, value);
+            SoapySDR::logf(SOAPY_SDR_DEBUG, "TX ch%zu: ATT %.3f dB Attenuation", channel, value);
+            int rc = m2sdr_set_tx_att(_dev, value);
             if (rc != 0) {
-                SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_gain(TX) failed: %s", m2sdr_strerror(rc));
+                SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_tx_att(TX) failed: %s", m2sdr_strerror(rc));
             }
             return;
         }
@@ -1037,11 +1001,17 @@ void SoapyLiteXM2SDR::setGain(
 
     /* RX */
     if (name == "PGA" || name == "RF" || name == "GAIN") {
+        uint8_t gc_mode = RF_GAIN_MGC;
         _rx_stream.gain[channel] = value;
+        ad9361_get_rx_gain_control_mode(ad9361_phy, channel, &gc_mode);
+        if (gc_mode != RF_GAIN_MGC) {
+            ad9361_set_rx_gain_control_mode(ad9361_phy, channel, RF_GAIN_MGC);
+            _rx_stream.gainMode[channel] = false;
+        }
         SoapySDR::logf(SOAPY_SDR_DEBUG, "RX ch%zu: RF %.3f dB Gain", channel, value);
-        int rc = m2sdr_set_gain(_dev, M2SDR_RX, value);
+        int rc = m2sdr_set_rx_gain_chan(_dev, (unsigned)channel, value);
         if (rc != 0) {
-            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_gain(RX) failed: %s", m2sdr_strerror(rc));
+            SoapySDR::logf(SOAPY_SDR_ERROR, "m2sdr_set_rx_gain_chan(RX) failed: %s", m2sdr_strerror(rc));
         }
         return;
     }
@@ -1058,8 +1028,9 @@ double SoapyLiteXM2SDR::getGain(
 
     /* TX */
     if (direction == SOAPY_SDR_TX) {
-        ad9361_get_tx_attenuation(ad9361_phy, channel, (uint32_t *) &gain);
-        gain = -gain/1000;
+        uint32_t atten_mdb = 0;
+        ad9361_get_tx_attenuation(ad9361_phy, channel, &atten_mdb);
+        gain = (int32_t)(atten_mdb / 1000);
     }
 
     /* RX */
@@ -1081,9 +1052,7 @@ double SoapyLiteXM2SDR::getGain(
         ad9361_get_tx_attenuation(ad9361_phy, channel, &atten_mdb);
         double atten_db = atten_mdb / 1000.0;
         if (name == "ATT")
-            return atten_db;     /* Positive attenuation. */
-        if (name == "GAIN")
-            return -atten_db;        /* Negative gain. */
+            return atten_db;
     }
 
     /* RX */
@@ -1103,7 +1072,7 @@ SoapySDR::Range SoapyLiteXM2SDR::getGainRange(
 
     /* TX */
     if (direction == SOAPY_SDR_TX)
-        return(SoapySDR::Range(-89, 0));
+        return(SoapySDR::Range(0, 89));
 
     /* RX */
     if (direction == SOAPY_SDR_RX)
@@ -1123,8 +1092,6 @@ SoapySDR::Range SoapyLiteXM2SDR::getGainRange(
     if (direction == SOAPY_SDR_TX) {
         if (name == "ATT")
             return(SoapySDR::Range(0, 89));
-        if (name == "GAIN")
-            return(SoapySDR::Range(-89, 0));
     }
 
     /* RX */

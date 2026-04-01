@@ -23,6 +23,7 @@
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <GL/gl.h>
+#include <png.h>
 
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui/cimgui.h"
@@ -44,7 +45,7 @@
 
 #define DEFAULT_SCAN_SAMPLERATE_HZ 61440000U
 #define DEFAULT_SCAN_BANDWIDTH_HZ  56000000U
-#define SCAN_TX_GAIN_DB    -30
+#define SCAN_TX_ATT_DB      30
 #define DEFAULT_START_FREQ_HZ 2300000000LL
 #define DEFAULT_STOP_FREQ_HZ  2500000000LL
 #define DEFAULT_RX_GAIN_DB    50
@@ -213,6 +214,10 @@ struct scan_state {
     double marker_b_hz;
     bool export_csv_request;
     bool export_snapshot_request;
+    bool hw_time_valid;
+    uint64_t hw_time_ns;
+    char hw_time_text[64];
+    char pc_time_text[64];
     bool lo_valid;
     int64_t lo_hz;
     bool fastlock_enable;
@@ -363,6 +368,215 @@ static void make_timestamp(char *buf, size_t buflen)
     strftime(buf, buflen, "%Y%m%d_%H%M%S", &tmv);
 }
 
+static void format_wallclock_time_ns(uint64_t time_ns, char *buf, size_t buflen)
+{
+    time_t seconds;
+    uint32_t ms;
+    struct tm tmv;
+
+    if (!buf || buflen == 0)
+        return;
+
+    seconds = (time_t)(time_ns / 1000000000ULL);
+    ms = (uint32_t)((time_ns % 1000000000ULL) / 1000000ULL);
+    localtime_r(&seconds, &tmv);
+    strftime(buf, buflen, "%Y-%m-%d %H:%M:%S", &tmv);
+    snprintf(buf + strlen(buf), buflen - strlen(buf), ".%03u", ms);
+}
+
+static void refresh_display_times(struct scan_state *s)
+{
+    struct timespec ts;
+    uint64_t hw_time_ns;
+
+    if (!s)
+        return;
+
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        uint64_t pc_time_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+        format_wallclock_time_ns(pc_time_ns, s->pc_time_text, sizeof(s->pc_time_text));
+    } else {
+        snprintf(s->pc_time_text, sizeof(s->pc_time_text), "unavailable");
+    }
+
+    if (g_dev && m2sdr_get_time(g_dev, &hw_time_ns) == 0) {
+        s->hw_time_valid = true;
+        s->hw_time_ns = hw_time_ns;
+        format_wallclock_time_ns(hw_time_ns, s->hw_time_text, sizeof(s->hw_time_text));
+    } else {
+        s->hw_time_valid = false;
+        s->hw_time_ns = 0;
+        snprintf(s->hw_time_text, sizeof(s->hw_time_text), "unavailable");
+    }
+}
+
+static bool get_display_bounds_safe(int display_index, SDL_Rect *bounds)
+{
+    if (!bounds)
+        return false;
+    if (SDL_GetDisplayUsableBounds(display_index, bounds) == 0)
+        return true;
+    return SDL_GetDisplayBounds(display_index, bounds) == 0;
+}
+
+static bool move_window_to_display(SDL_Window *window, int display_index, bool maximize)
+{
+    SDL_Rect bounds;
+    Uint32 flags;
+    int width, height;
+    int x, y;
+
+    if (!window || !get_display_bounds_safe(display_index, &bounds))
+        return false;
+
+    flags = SDL_GetWindowFlags(window);
+    if (flags & SDL_WINDOW_MAXIMIZED)
+        SDL_RestoreWindow(window);
+
+    SDL_GetWindowSize(window, &width, &height);
+    if (width < 640)
+        width = 640;
+    if (height < 480)
+        height = 480;
+    if (width > bounds.w)
+        width = bounds.w;
+    if (height > bounds.h)
+        height = bounds.h;
+
+    x = bounds.x + (bounds.w - width) / 2;
+    y = bounds.y + (bounds.h - height) / 2;
+    SDL_SetWindowPosition(window, x, y);
+    SDL_SetWindowSize(window, width, height);
+
+    if (maximize)
+        SDL_MaximizeWindow(window);
+
+    return true;
+}
+
+static void cycle_window_display(SDL_Window *window, int direction)
+{
+    int displays;
+    int current;
+    int next;
+    bool maximize;
+
+    if (!window)
+        return;
+
+    displays = SDL_GetNumVideoDisplays();
+    if (displays <= 1)
+        return;
+
+    current = SDL_GetWindowDisplayIndex(window);
+    if (current < 0)
+        current = 0;
+
+    next = (current + direction) % displays;
+    if (next < 0)
+        next += displays;
+
+    maximize = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+    (void)move_window_to_display(window, next, maximize);
+}
+
+static bool get_all_display_bounds(SDL_Rect *all_bounds)
+{
+    SDL_Rect bounds;
+    int displays;
+    int i;
+
+    if (!all_bounds)
+        return false;
+
+    displays = SDL_GetNumVideoDisplays();
+    if (displays <= 0)
+        return false;
+    if (SDL_GetDisplayBounds(0, all_bounds) != 0)
+        return false;
+
+    for (i = 1; i < displays; i++) {
+        if (SDL_GetDisplayBounds(i, &bounds) != 0)
+            continue;
+        if (bounds.x < all_bounds->x) {
+            all_bounds->w += all_bounds->x - bounds.x;
+            all_bounds->x = bounds.x;
+        }
+        if (bounds.y < all_bounds->y) {
+            all_bounds->h += all_bounds->y - bounds.y;
+            all_bounds->y = bounds.y;
+        }
+        if (bounds.x + bounds.w > all_bounds->x + all_bounds->w)
+            all_bounds->w = (bounds.x + bounds.w) - all_bounds->x;
+        if (bounds.y + bounds.h > all_bounds->y + all_bounds->h)
+            all_bounds->h = (bounds.y + bounds.h) - all_bounds->y;
+    }
+
+    return true;
+}
+
+static bool span_window_all_displays(SDL_Window *window)
+{
+    SDL_Rect all_bounds;
+    Uint32 flags;
+
+    if (!window || !get_all_display_bounds(&all_bounds))
+        return false;
+
+    flags = SDL_GetWindowFlags(window);
+    if (flags & SDL_WINDOW_MAXIMIZED)
+        SDL_RestoreWindow(window);
+
+    SDL_SetWindowPosition(window, all_bounds.x, all_bounds.y);
+    SDL_SetWindowSize(window, all_bounds.w, all_bounds.h);
+    return true;
+}
+
+static bool toggle_fullscreen_span_all_displays(SDL_Window *window)
+{
+    static struct {
+        bool active;
+        bool valid;
+        bool bordered;
+        bool maximized;
+        int x;
+        int y;
+        int w;
+        int h;
+    } saved = {0};
+
+    if (!window)
+        return false;
+
+    if (!saved.active) {
+        Uint32 flags = SDL_GetWindowFlags(window);
+
+        SDL_GetWindowPosition(window, &saved.x, &saved.y);
+        SDL_GetWindowSize(window, &saved.w, &saved.h);
+        saved.bordered = SDL_GetWindowBordersSize(window, NULL, NULL, NULL, NULL) == 0;
+        saved.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+        saved.valid = true;
+
+        if (saved.maximized)
+            SDL_RestoreWindow(window);
+        SDL_SetWindowBordered(window, SDL_FALSE);
+        if (!span_window_all_displays(window))
+            return false;
+        saved.active = true;
+        return true;
+    }
+
+    SDL_SetWindowBordered(window, saved.bordered ? SDL_TRUE : SDL_FALSE);
+    if (saved.valid) {
+        SDL_SetWindowPosition(window, saved.x, saved.y);
+        SDL_SetWindowSize(window, saved.w, saved.h);
+        if (saved.maximized)
+            SDL_MaximizeWindow(window);
+    }
+    saved.active = false;
+    return true;
+}
+
 static bool export_csv_path(struct scan_state *s, const char *path)
 {
     FILE *f;
@@ -406,37 +620,94 @@ static void export_current_csv(struct scan_state *s)
     (void)export_csv_path(s, path);
 }
 
-static void export_snapshot_ppm(int width, int height)
+static bool write_rgb_png(const char *path, int width, int height, const unsigned char *pixels, int stride_bytes)
+{
+    FILE *f = NULL;
+    png_structp png_ptr = NULL;
+    png_infop info_ptr = NULL;
+    int y;
+
+    if (!path || width <= 0 || height <= 0 || !pixels || stride_bytes < width * 3)
+        return false;
+
+    f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "Failed to write %s\n", path);
+        return false;
+    }
+
+    png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    info_ptr = png_create_info_struct(png_ptr);
+    if (!png_ptr || !info_ptr) {
+        fprintf(stderr, "Failed to initialize PNG writer for %s\n", path);
+        fclose(f);
+        if (png_ptr)
+            png_destroy_write_struct(&png_ptr, &info_ptr);
+        return false;
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        fprintf(stderr, "Failed to encode %s\n", path);
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(f);
+        return false;
+    }
+
+    png_init_io(png_ptr, f);
+    png_set_IHDR(png_ptr, info_ptr,
+                 (png_uint_32)width, (png_uint_32)height,
+                 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png_ptr, info_ptr);
+    for (y = 0; y < height; y++) {
+        png_bytep row = (png_bytep)(pixels + (size_t)y * (size_t)stride_bytes);
+        png_write_row(png_ptr, row);
+    }
+    png_write_end(png_ptr, NULL);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(f);
+
+    fprintf(stderr, "Saved %s\n", path);
+    return true;
+}
+
+static void export_snapshot_png(int width, int height)
 {
     char ts[32], path[128];
-    FILE *f;
     unsigned char *pix;
+    unsigned char *tmp;
     int y;
+    size_t stride_bytes;
 
     if (width <= 0 || height <= 0)
         return;
 
-    pix = (unsigned char *)malloc((size_t)width * (size_t)height * 3);
-    if (!pix)
+    stride_bytes = (size_t)width * 3;
+    pix = (unsigned char *)malloc((size_t)height * stride_bytes);
+    tmp = (unsigned char *)malloc(stride_bytes);
+    if (!pix || !tmp) {
+        free(tmp);
+        free(pix);
         return;
+    }
 
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pix);
 
+    for (y = 0; y < height / 2; y++) {
+        unsigned char *top = pix + (size_t)y * stride_bytes;
+        unsigned char *bottom = pix + (size_t)(height - 1 - y) * stride_bytes;
+        memcpy(tmp, top, stride_bytes);
+        memcpy(top, bottom, stride_bytes);
+        memcpy(bottom, tmp, stride_bytes);
+    }
+
     make_timestamp(ts, sizeof(ts));
-    snprintf(path, sizeof(path), "m2sdr_scan_%s.ppm", ts);
-    f = fopen(path, "wb");
-    if (!f) {
-        free(pix);
-        return;
-    }
-    fprintf(f, "P6\n%d %d\n255\n", width, height);
-    for (y = height - 1; y >= 0; y--) {
-        fwrite(pix + (size_t)y * (size_t)width * 3, 1, (size_t)width * 3, f);
-    }
-    fclose(f);
+    snprintf(path, sizeof(path), "m2sdr_scan_%s.png", ts);
+    (void)write_rgb_png(path, width, height, pix, (int)stride_bytes);
+
+    free(tmp);
     free(pix);
-    fprintf(stderr, "Saved %s\n", path);
 }
 
 static void waterfall_compose_view(struct scan_state *s)
@@ -477,9 +748,10 @@ static void waterfall_compose_view(struct scan_state *s)
     }
 }
 
-static bool export_waterfall_ppm_path(struct scan_state *s, const char *path)
+static bool export_waterfall_png_path(struct scan_state *s, const char *path)
 {
-    FILE *f;
+    unsigned char *rgb;
+    size_t stride_bytes;
     int x, y;
 
     if (!path || !s->waterfall_view_rgba || s->waterfall_tex_width <= 0 || s->lines <= 0)
@@ -487,27 +759,25 @@ static bool export_waterfall_ppm_path(struct scan_state *s, const char *path)
 
     waterfall_compose_view(s);
 
-    f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr, "Failed to write %s\n", path);
+    stride_bytes = (size_t)s->waterfall_tex_width * 3;
+    rgb = (unsigned char *)malloc((size_t)s->lines * stride_bytes);
+    if (!rgb)
         return false;
-    }
 
-    fprintf(f, "P6\n%d %d\n255\n", s->waterfall_tex_width, s->lines);
     for (y = 0; y < s->lines; y++) {
         const uint32_t *row = s->waterfall_view_rgba + (size_t)y * (size_t)s->waterfall_tex_width;
+        unsigned char *out = rgb + (size_t)y * stride_bytes;
         for (x = 0; x < s->waterfall_tex_width; x++) {
             uint32_t px = row[x];
-            unsigned char rgb[3];
-            rgb[0] = (unsigned char)((px >> 16) & 0xff);
-            rgb[1] = (unsigned char)((px >> 8) & 0xff);
-            rgb[2] = (unsigned char)(px & 0xff);
-            fwrite(rgb, 1, sizeof(rgb), f);
+            out[x * 3 + 0] = (unsigned char)((px >> 16) & 0xff);
+            out[x * 3 + 1] = (unsigned char)((px >> 8) & 0xff);
+            out[x * 3 + 2] = (unsigned char)(px & 0xff);
         }
     }
-    fclose(f);
-    fprintf(stderr, "Saved %s\n", path);
-    return true;
+
+    y = write_rgb_png(path, s->waterfall_tex_width, s->lines, rgb, (int)stride_bytes);
+    free(rgb);
+    return y;
 }
 
 static bool save_preset_file(const struct scan_state *s, const char *path)
@@ -1529,12 +1799,84 @@ static int build_plot_slice_from(const struct scan_state *s, const float *src,
     return MAX_PLOT_POINTS;
 }
 
-static void format_freq_label(double hz, char *buf, size_t buflen)
+static double choose_125_step(double span, int target_ticks)
 {
-    if (hz >= 1e9)
-        snprintf(buf, buflen, "%.3fG", hz / 1e9);
-    else
-        snprintf(buf, buflen, "%.1fM", hz / 1e6);
+    static const double mults[] = { 1.0, 2.0, 5.0, 10.0 };
+    double raw;
+    double decade;
+    double norm;
+    int i;
+
+    if (span <= 0.0 || target_ticks <= 0)
+        return 1.0;
+
+    raw = span / (double)target_ticks;
+    decade = pow(10.0, floor(log10(raw)));
+    norm = raw / decade;
+
+    for (i = 0; i < (int)(sizeof(mults) / sizeof(mults[0])); i++) {
+        if (norm <= mults[i])
+            return mults[i] * decade;
+    }
+
+    return 10.0 * decade;
+}
+
+static double choose_minor_step(double major_step)
+{
+    double decade;
+    double norm;
+
+    if (major_step <= 0.0)
+        return 1.0;
+
+    decade = pow(10.0, floor(log10(major_step)));
+    norm = major_step / decade;
+    if (norm >= 5.0)
+        return decade;
+    if (norm >= 2.0)
+        return 0.5 * decade;
+    return 0.2 * decade;
+}
+
+static int decimals_for_step(double step)
+{
+    double s = fabs(step);
+
+    if (s >= 100.0)
+        return 0;
+    if (s >= 10.0)
+        return 1;
+    if (s >= 1.0)
+        return 2;
+    return 3;
+}
+
+static void format_freq_label(double hz, double step_hz, char *buf, size_t buflen)
+{
+    double abs_hz = fabs(hz);
+    double scale;
+    double scaled_step;
+    int decimals;
+    const char *unit;
+
+    if (abs_hz >= 1e9) {
+        scale = 1e9;
+        unit = "G";
+    } else if (abs_hz >= 1e6) {
+        scale = 1e6;
+        unit = "M";
+    } else if (abs_hz >= 1e3) {
+        scale = 1e3;
+        unit = "k";
+    } else {
+        scale = 1.0;
+        unit = "Hz";
+    }
+
+    scaled_step = step_hz / scale;
+    decimals = decimals_for_step(scaled_step);
+    snprintf(buf, buflen, "%.*f%s", decimals, hz / scale, unit);
 }
 
 static void draw_spectrum_with_grid(struct scan_state *s,
@@ -1558,8 +1900,6 @@ static void draw_spectrum_with_grid(struct scan_state *s,
                                     double f1_hz)
 {
     int i;
-    int v_ticks = 10;
-    int h_ticks = 4;
     float y_min = s->db_min;
     float y_max = s->db_max;
     ImVec2 pmin, pmax;
@@ -1567,7 +1907,9 @@ static void draw_spectrum_with_grid(struct scan_state *s,
     ImU32 col_bg = 0xFF131415u;
     ImU32 col_border = 0xFF3A3A3Au;
     ImU32 col_grid_v = 0xFF4A4A4Au;
+    ImU32 col_grid_v_minor = 0xFF313131u;
     ImU32 col_grid_h = 0xFF2A2A2Au;
+    ImU32 col_grid_h_minor = 0xFF232323u;
     ImU32 col_trace = 0xFF66D9FFu;
     ImU32 col_avg = 0xFF63E2A7u;
     ImU32 col_peak = 0xFFFFD166u;
@@ -1579,6 +1921,12 @@ static void draw_spectrum_with_grid(struct scan_state *s,
     ImU32 col_band_text_shadow = 0xCC000000u;
     float band_label_font_size = 11.0f;
     int b;
+    double freq_major_step;
+    double freq_minor_step;
+    double freq_tick;
+    double db_major_step;
+    double db_minor_step;
+    double db_tick;
 
     if (plot_count <= 1 || width <= 4.0f || height <= 4.0f)
         return;
@@ -1663,13 +2011,48 @@ static void draw_spectrum_with_grid(struct scan_state *s,
         }
     }
 
-    for (i = 0; i <= v_ticks; i++) {
-        float x = pmin.x + (pmax.x - pmin.x) * (float)i / (float)v_ticks;
-        ImDrawList_AddLine(dl, (ImVec2){x, pmin.y}, (ImVec2){x, pmax.y}, col_grid_v, 1.2f);
+    freq_major_step = choose_125_step(f1_hz - f0_hz, (int)(width / 110.0f));
+    freq_minor_step = choose_minor_step(freq_major_step);
+    for (freq_tick = floor(f0_hz / freq_minor_step) * freq_minor_step;
+         freq_tick <= f1_hz + 0.5 * freq_minor_step;
+         freq_tick += freq_minor_step) {
+        float x;
+        bool is_major;
+        double major_pos;
+
+        if (freq_tick < f0_hz - 0.5 * freq_minor_step)
+            continue;
+        x = pmin.x + (float)((freq_tick - f0_hz) / (f1_hz - f0_hz + 1e-12)) * (pmax.x - pmin.x);
+        if (x < pmin.x - 1.0f || x > pmax.x + 1.0f)
+            continue;
+        major_pos = freq_tick / freq_major_step;
+        is_major = fabs(major_pos - round(major_pos)) < 1e-6;
+        ImDrawList_AddLine(dl, (ImVec2){x, pmin.y}, (ImVec2){x, pmax.y},
+                           is_major ? col_grid_v : col_grid_v_minor,
+                           is_major ? 1.2f : 0.8f);
     }
-    for (i = 0; i <= h_ticks; i++) {
-        float y = pmin.y + (pmax.y - pmin.y) * (float)i / (float)h_ticks;
-        ImDrawList_AddLine(dl, (ImVec2){pmin.x, y}, (ImVec2){pmax.x, y}, col_grid_h, 1.0f);
+
+    db_major_step = 10.0;
+    if ((y_max - y_min) <= 35.0f)
+        db_major_step = 5.0;
+    db_minor_step = db_major_step / 2.0;
+    for (db_tick = floor(y_min / db_minor_step) * db_minor_step;
+         db_tick <= y_max + 0.5 * db_minor_step;
+         db_tick += db_minor_step) {
+        float y;
+        bool is_major;
+        double major_pos;
+
+        if (db_tick < y_min - 0.5 * db_minor_step)
+            continue;
+        y = pmax.y - (float)((db_tick - y_min) / (y_max - y_min + 1e-6f)) * (pmax.y - pmin.y);
+        if (y < pmin.y - 1.0f || y > pmax.y + 1.0f)
+            continue;
+        major_pos = db_tick / db_major_step;
+        is_major = fabs(major_pos - round(major_pos)) < 1e-6;
+        ImDrawList_AddLine(dl, (ImVec2){pmin.x, y}, (ImVec2){pmax.x, y},
+                           is_major ? col_grid_h : col_grid_h_minor,
+                           is_major ? 1.0f : 0.8f);
     }
 
     for (i = 0; i < plot_count; i++) {
@@ -1900,7 +2283,7 @@ static void draw_spectrum_with_grid(struct scan_state *s,
             x = pmin.x + (pmax.x - pmin.x) * idx_f / (float)(plot_count - 1);
             ImDrawList_AddLine(dl, (ImVec2){x, pmin.y}, (ImVec2){x, pmax.y}, col_marker_peak, 1.1f);
             freq = f0_hz + (f1_hz - f0_hz) * (double)idx_f / (double)(plot_count - 1);
-            format_freq_label(freq, txt, sizeof(txt));
+            format_freq_label(freq, freq_major_step, txt, sizeof(txt));
             tx = x + 3.0f;
             if (tx > pmax.x - 54.0f)
                 tx = pmax.x - 54.0f;
@@ -1917,13 +2300,15 @@ static void draw_spectrum_with_grid(struct scan_state *s,
         ImDrawList_AddLine(dl, (ImVec2){xb, pmin.y}, (ImVec2){xb, pmax.y}, col_marker_b, 1.2f);
     }
 
-    for (i = 0; i <= v_ticks; i++) {
+    for (freq_tick = ceil(f0_hz / freq_major_step) * freq_major_step;
+         freq_tick <= f1_hz + 0.5 * freq_major_step;
+         freq_tick += freq_major_step) {
         char txt[32];
-        double f = f0_hz + (f1_hz - f0_hz) * (double)i / (double)v_ticks;
-        format_freq_label(f, txt, sizeof(txt));
-        ImDrawList_AddText_Vec2(dl, (ImVec2){pmin.x + (pmax.x - pmin.x) * (float)i / (float)v_ticks + 2.0f, pmax.y - 16.0f},
-                                col_text, txt, NULL);
+        float x = pmin.x + (float)((freq_tick - f0_hz) / (f1_hz - f0_hz + 1e-12)) * (pmax.x - pmin.x);
+        format_freq_label(freq_tick, freq_major_step, txt, sizeof(txt));
+        ImDrawList_AddText_Vec2(dl, (ImVec2){x + 2.0f, pmax.y - 16.0f}, col_text, txt, NULL);
     }
+
 }
 
 static bool scan_line(struct scan_state *s)
@@ -2366,7 +2751,7 @@ static bool m2sdr_rfic_init(struct scan_state *s)
 
     m2sdr_set_sample_rate(g_dev, s->sample_rate_hz);
     m2sdr_set_bandwidth(g_dev, s->rf_bandwidth_hz);
-    m2sdr_set_tx_gain(g_dev, SCAN_TX_GAIN_DB);
+    m2sdr_set_tx_att(g_dev, SCAN_TX_ATT_DB);
     apply_rx_gain_request(s, s->rx_gain);
 
     m2sdr_set_tx_frequency(g_dev, (s->scan_start_hz + s->scan_stop_hz) / 2);
@@ -2393,16 +2778,19 @@ static void help(void)
            "      --sample-rate HZ   Scan sample rate in Hz (default: %u).\n"
            "      --fft-len N        FFT length (power of two, default: %d).\n"
            "      --lines N          Waterfall lines (default: %d).\n"
+           "      --display N        Open the UI on display N (default: current display).\n"
            "      --preset-load FILE Load scan preset before starting.\n"
            "      --preset-save FILE Save current scan preset.\n"
            "      --no-ui            Run headless capture/export without SDL/ImGui.\n"
            "      --export-csv FILE  Export the final spectrum line to CSV.\n"
-           "      --export-ppm FILE  Export the waterfall buffer to PPM.\n"
+           "      --export-png FILE  Export the waterfall buffer to PNG.\n"
            "\n"
            "Runtime controls in UI:\n"
            "  - Scan start/stop (MHz), sample rate, stitch mode, settle time, FFT length, line count,\n"
-           "    RX gain and dB scale.\n"
+            "    RX gain and dB scale.\n"
            "  - Parameters are applied live while moving sliders.\n"
+           "  - F8 cycles the window across monitors; Shift+F8 spans across all monitors.\n"
+           "  - F11 toggles borderless fullscreen spanning all monitors.\n"
            "\n"
            "Notes:\n"
            "  - Supported samplerates are submultiples of 61.44 MSPS.\n"
@@ -2681,6 +3069,8 @@ static void draw_controls_panel(struct scan_state *s, struct ui_state *ui, float
     igSameLine(0.0f, 6.0f);
     if (igButton("Snapshot", (ImVec2){85.0f, 0.0f}))
         s->export_snapshot_request = true;
+
+    refresh_display_times(s);
     igSameLine(0.0f, 12.0f);
     igText("Device %s", m2sdr_cli_pcie_path(&g_cli_dev));
     igSameLine(0.0f, 12.0f);
@@ -2688,6 +3078,10 @@ static void draw_controls_panel(struct scan_state *s, struct ui_state *ui, float
            (double)s->lo_hz / 1e6, s->perf.retunes_per_sec, s->perf.dma_wait_per_sec, s->stitch_pct);
     igSameLine(0.0f, 12.0f);
     igText("SR %.2f MSPS / BW %.2f MHz", (double)s->sample_rate_hz / 1e6, (double)s->rf_bandwidth_hz / 1e6);
+    igSameLine(0.0f, 12.0f);
+    igText("HW %s", s->hw_time_text);
+    igSameLine(0.0f, 12.0f);
+    igText("PC %s", s->pc_time_text);
 
     igSeparatorText("Scan Range");
     igSetNextItemWidth(160.0f);
@@ -3103,8 +3497,9 @@ int main(int argc, char **argv)
     const char *preset_load_path = NULL;
     const char *preset_save_path = NULL;
     const char *export_csv_pathname = NULL;
-    const char *export_ppm_pathname = NULL;
+    const char *export_png_pathname = NULL;
     bool no_ui = false;
+    int initial_display = -1;
 
     static struct option options[] = {
         { "help", no_argument, NULL, 'h' },
@@ -3123,11 +3518,12 @@ int main(int argc, char **argv)
         { "lines", required_argument, NULL, 6 },
         { "sample-rate", required_argument, NULL, 7 },
         { "sample_rate", required_argument, NULL, 7 },
-        { "preset-load", required_argument, NULL, 8 },
-        { "preset-save", required_argument, NULL, 9 },
-        { "no-ui", no_argument, NULL, 10 },
-        { "export-csv", required_argument, NULL, 11 },
-        { "export-ppm", required_argument, NULL, 12 },
+        { "display", required_argument, NULL, 8 },
+        { "preset-load", required_argument, NULL, 9 },
+        { "preset-save", required_argument, NULL, 10 },
+        { "no-ui", no_argument, NULL, 11 },
+        { "export-csv", required_argument, NULL, 12 },
+        { "export-png", required_argument, NULL, 13 },
         { NULL, 0, NULL, 0 }
     };
 
@@ -3219,21 +3615,24 @@ int main(int argc, char **argv)
             s.rf_bandwidth_hz = scan_bandwidth_from_samplerate(s.sample_rate_hz);
             break;
         case 8:
+            initial_display = atoi(optarg);
+            break;
+        case 9:
             preset_load_path = optarg;
             if (!load_preset_file(&s, preset_load_path))
                 return 1;
             break;
-        case 9:
+        case 10:
             preset_save_path = optarg;
             break;
-        case 10:
+        case 11:
             no_ui = true;
             break;
-        case 11:
+        case 12:
             export_csv_pathname = optarg;
             break;
-        case 12:
-            export_ppm_pathname = optarg;
+        case 13:
+            export_png_pathname = optarg;
             break;
         default:
             return 1;
@@ -3259,6 +3658,15 @@ int main(int argc, char **argv)
         goto fail;
     }
 
+    if (initial_display >= 0) {
+        int displays = SDL_GetNumVideoDisplays();
+        if (initial_display >= displays) {
+            fprintf(stderr, "Invalid display index %d (available: 0..%d).\n",
+                    initial_display, displays > 0 ? displays - 1 : 0);
+            goto fail;
+        }
+    }
+
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -3268,8 +3676,8 @@ int main(int argc, char **argv)
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
     window = SDL_CreateWindow("M2SDR Scan - Wideband Spectrum and Waterfall",
-                              SDL_WINDOWPOS_CENTERED,
-                              SDL_WINDOWPOS_CENTERED,
+                              initial_display >= 0 ? SDL_WINDOWPOS_CENTERED_DISPLAY(initial_display) : SDL_WINDOWPOS_CENTERED,
+                              initial_display >= 0 ? SDL_WINDOWPOS_CENTERED_DISPLAY(initial_display) : SDL_WINDOWPOS_CENTERED,
                               1400,
                               850,
                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
@@ -3320,9 +3728,9 @@ int main(int argc, char **argv)
 
         if (export_csv_pathname && !export_csv_path(&s, export_csv_pathname))
             goto fail;
-        if (export_ppm_pathname && !export_waterfall_ppm_path(&s, export_ppm_pathname))
+        if (export_png_pathname && !export_waterfall_png_path(&s, export_png_pathname))
             goto fail;
-        if (!export_csv_pathname && !export_ppm_pathname)
+        if (!export_csv_pathname && !export_png_pathname)
             fprintf(stderr, "Headless scan completed with no export requested.\n");
 
         free_scan_state(&s);
@@ -3343,6 +3751,7 @@ int main(int argc, char **argv)
                 quit = true;
             if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
                 SDL_Keycode kc = e.key.keysym.sym;
+                SDL_Keymod mod = SDL_GetModState();
                 if (kc == SDLK_SPACE) {
                     s.run = !s.run;
                 } else if (kc == SDLK_p) {
@@ -3351,6 +3760,13 @@ int main(int argc, char **argv)
                     s.spectrum_peak_marker = !s.spectrum_peak_marker;
                 } else if (kc == SDLK_r) {
                     reset_spectrum_view(&s);
+                } else if (kc == SDLK_F8) {
+                    if (mod & KMOD_SHIFT)
+                        (void)span_window_all_displays(window);
+                    else
+                        cycle_window_display(window, 1);
+                } else if (kc == SDLK_F11) {
+                    (void)toggle_fullscreen_span_all_displays(window);
                 }
             }
         }
@@ -3414,7 +3830,7 @@ int main(int argc, char **argv)
             s.export_csv_request = false;
         }
         if (s.export_snapshot_request) {
-            export_snapshot_ppm((int)io->DisplaySize.x, (int)io->DisplaySize.y);
+            export_snapshot_png((int)io->DisplaySize.x, (int)io->DisplaySize.y);
             s.export_snapshot_request = false;
         }
 
@@ -3423,7 +3839,7 @@ int main(int argc, char **argv)
 
     if (export_csv_pathname && !export_csv_path(&s, export_csv_pathname))
         goto fail;
-    if (export_ppm_pathname && !export_waterfall_ppm_path(&s, export_ppm_pathname))
+    if (export_png_pathname && !export_waterfall_png_path(&s, export_png_pathname))
         goto fail;
 
     m2sdr_imgui_opengl3_shutdown();

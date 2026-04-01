@@ -4,8 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libm2sdr/m2sdr.h"
-#include "libm2sdr/m2sdr_internal.h"
+#include "m2sdr.h"
+#include "m2sdr_internal.h"
+#include "../m2sdr_cli.h"
 
 static int test_parse_identifier_invalid_ports(void)
 {
@@ -23,6 +24,26 @@ static int test_parse_identifier_invalid_ports(void)
     if (m2sdr_test_parse_identifier("eth:192.168.1.10:1234", &port) != 0)
         return -1;
     if (port != 1234)
+        return -1;
+
+    return 0;
+}
+
+static int test_cli_numeric_parser(void)
+{
+    int64_t value = 0;
+
+    if (m2sdr_cli_parse_int64("30720000", &value) != 0 || value != 30720000)
+        return -1;
+    if (m2sdr_cli_parse_int64("30.72e6", &value) != 0 || value != 30720000)
+        return -1;
+    if (m2sdr_cli_parse_int64("20M", &value) != 0 || value != 20000000)
+        return -1;
+    if (m2sdr_cli_parse_int64("2.4e9", &value) != 0 || value != 2400000000LL)
+        return -1;
+    if (m2sdr_cli_parse_int64("10.5", &value) == 0)
+        return -1;
+    if (m2sdr_cli_parse_int64("30.72foo", &value) == 0)
         return -1;
 
     return 0;
@@ -64,7 +85,7 @@ static int test_rf_range_validation(void)
         return -1;
 
     m2sdr_config_init(&cfg);
-    cfg.tx_gain = -100;
+    cfg.tx_att = 100;
     if (m2sdr_apply_config(&dev, &cfg) != M2SDR_ERR_RANGE)
         return -1;
     if (m2sdr_set_sample_rate(&dev, -1) != M2SDR_ERR_RANGE)
@@ -100,6 +121,10 @@ int main(void)
 {
     if (test_parse_identifier_invalid_ports() != 0) {
         fprintf(stderr, "test_parse_identifier_invalid_ports failed\n");
+        return 1;
+    }
+    if (test_cli_numeric_parser() != 0) {
+        fprintf(stderr, "test_cli_numeric_parser failed\n");
         return 1;
     }
     if (test_stream_direction_validation() != 0) {

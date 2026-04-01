@@ -72,10 +72,11 @@ Unlock new possibilities in your SDR projects with this cutting-edge board—we'
 
 1. [Hardware Availability](#hardware-availability)
 2. [Capabilities Overview](#capabilities-overview)
-3. [PCIe SoC Design](#pcie-soc-design)
-4. [Ethernet SoC Design (WIP)](#ethernet-soc-design)
-5. [Quick Start](#quick-start)
-6. [Contact](#contact)
+3. [M.2 / GPIO Voltage Levels](#m2-gpio-voltage-levels)
+4. [PCIe SoC Design](#pcie-soc-design)
+5. [Ethernet SoC Design (WIP)](#ethernet-soc-design)
+6. [Quick Start](#quick-start)
+7. [Contact](#contact)
 
 [> Hardware Availability
 ------------------------
@@ -120,6 +121,57 @@ The hardware has been thoroughly tested with several SDR softwares compatible wi
 | **System Features**             |                              |                              |                                               |
 | Multiboot / Remote Update       | ✅                           | ✅                           | (always included)                             |
 | GPIO                            | ✅                           | ✅                           | (always included)                             |
+
+### User LED Behavior
+
+The board exposes a single monochrome `user_led`, so the gateware uses it as a layered status indicator rather than a simple on/off flag:
+
+- **Not ready yet**: double-heartbeat while time is still invalid or while an enabled PCIe/Ethernet transport is not ready.
+  PCIe becomes ready when the link is up and DMA/PPS synchronization is established; Ethernet becomes ready when the link is up.
+- **Idle / ready state**: gentle low-amplitude breathing.
+- **PPS event**: short bright accent pulse over the base animation.
+- **RF or Ethernet RX/TX activity**: bright accent pulse.
+
+When PCIe is not enabled in the build, the PCIe-specific states are naturally skipped and the LED falls back to the generic timing/activity behavior.
+
+[> M.2 / GPIO Voltage Levels
+----------------------------
+<a id="m2-gpio-voltage-levels"></a>
+
+LiteX-M2SDR does **not** use a single M.2 I/O voltage:
+- FPGA banks **13/14/15/16** on the SDR are powered at **3.3V**.
+- FPGA banks **34/35** on the SDR are powered at **1.8V**.
+- The general-purpose sideband signals routed directly from the M.2 connector to the FPGA on LiteX-M2SDR (`PPS`, `Synchro_GPIO`, `PERST#`, optional `PEWAKE#`, `SUSCLK`, `PEDET`) sit on **3.3V FPGA banks on the SDR side**.
+- The M.2 `SMB_CLK` / `SMB_DATA` pins are a special case: on LiteX-M2SDR r02 they reach the FPGA bank-16 pins through optional resistors `R82` / `R83`, which are **not mounted by default**.
+- PCIe lanes and the PCIe reference clock are transceiver signals, not single-ended 1.8V/3.3V GPIOs.
+
+Additional notes:
+- M.2 pin **44** (`ALERT#` / `SMB_ALERT#`) is currently **not routed to the FPGA** on LiteX-M2SDR r02.
+- M.2 pin **52** (`CLKREQ#`) is pulled up to `3V3_PCIe` and is **not** routed to the FPGA.
+- M.2 pin **10** (`LED#`) is **not connected** on the FPGA side.
+- The dedicated FPGA JTAG/config pins and the Acorn JTAG header are separate **3.3V** JTAG paths.
+- When discussing M.2 sideband voltages, distinguish the **FPGA bank voltage on the SDR** from the **connector-side voltage expected by a host/baseboard**. For example, the Acorn baseboard implements the M.2 SMBus pins as a **1.8V SMBus domain** with translation to **3.3V** for the SFP modules.
+
+| Signal | Connector Location | FPGA Pin | Bank | Voltage On SDR Side | Notes |
+|--------|--------------------|----------|------|---------------------|-------|
+| `GPIO0` | `TP1` | `E22` | 16 | 3.3V | General-purpose test point (`FPGA_GPIO0`). |
+| `GPIO1` | `TP2` | `D22` | 16 | 3.3V | General-purpose test point (`FPGA_GPIO1`). |
+| `PPS_IN` | M.2 pin 22 (`NC22`) | `K18` | 15 | 3.3V | Routed to the FPGA. |
+| `PPS_OUT` | M.2 pin 24 (`NC24`) | `Y18` | 14 | 3.3V | Routed to the FPGA. |
+| `Synchro_GPIO1` | M.2 pin 28 (`NC28`) | `A19` | 16 | 3.3V | Routed to the FPGA. |
+| `Synchro_GPIO2` | M.2 pin 30 (`NC30`) | `A18` | 16 | 3.3V | Routed to the FPGA. |
+| `Synchro_GPIO3` | M.2 pin 32 (`NC32`) | `A21` | 16 | 3.3V | Routed to the FPGA. |
+| `Synchro_GPIO4` | M.2 pin 34 (`NC34`) | `A20` | 16 | 3.3V | Routed to the FPGA. |
+| `Synchro_GPIO5` | M.2 pin 36 (`NC36`) | `B20` | 16 | 3.3V | Routed to the FPGA. |
+| `SMB_CLK` | M.2 pin 40 | `A13` | 16 | 3.3V FPGA bank on SDR | Optional path through `R82`, not mounted by default; connector-level SMBus compatibility depends on the host/baseboard. |
+| `SMB_DATA` | M.2 pin 42 | `A14` | 16 | 3.3V FPGA bank on SDR | Optional path through `R83`, not mounted by default; connector-level SMBus compatibility depends on the host/baseboard. |
+| `ALERT#` / `SMB_ALERT#` | M.2 pin 44 | - | - | Host-defined sideband | Not routed to the FPGA on LiteX-M2SDR r02. |
+| `PERST#` | M.2 pin 50 | `A15` | 16 | 3.3V | Routed to the FPGA. |
+| `CLKREQ#` | M.2 pin 52 | - | - | 3.3V | Pulled up to `3V3_PCIe` with `R59`; not routed to the FPGA. |
+| `PEWAKE#` | M.2 pin 54 | `B16` | 16 | 3.3V | Optional path through `R88`, not mounted by default. |
+| `SUSCLK` | M.2 pin 68 | `B17` | 16 | 3.3V | Routed through `R84` (0R). |
+| `PEDET` / `PRESENT` | M.2 pin 69 | `A16` | 16 | 3.3V | Routed through `R85` (0R). |
+| `LED#` | M.2 pin 10 | - | - | Host-defined sideband | Not connected on LiteX-M2SDR. |
 
 [> PCIe SoC Design
 ------------------
@@ -184,39 +236,62 @@ If you are an SDR enthusiast looking to get started with the LiteX-M2SDR board, 
 >
 > If an error related to DKMS appears during installation, run sudo apt remove --purge xtrx-dkms dkms and then re-execute the installation command.
 
-4. **Clone the Repository:**
+3. **Clone the Repository:**
    - Clone the LiteX-M2SDR repository using the following command:
    ```
    git clone https://github.com/enjoy-digital/litex_m2sdr
    ```
 
-5. **Build and Install Software:**
+4. **Build Software:**
     Software build uses `make` and CMake for the C kernel driver and utilities, but since we also like Python 😅, we created a small script on top of it to simplify development and installation:
-   - Navigate to the software directory and run the build script:
    ```
    cd litex_m2sdr/software
    ./build.py
    ```
    - This builds the kernel driver, the user-space utilities, `libm2sdr`, and the SoapySDR driver.
-   - To install the public C API headers/library for external applications:
+   - If you also want the optional SDL/OpenGL GUI tools (`m2sdr_check` / `m2sdr_scan`), first populate the pinned `cimgui` checkout with:
+   ```
+   cd litex_m2sdr/software
+   ./fetch_cimgui.py
+   ```
+   - Or in a single step:
+   ```
+   cd litex_m2sdr/software
+   ./build.py --fetch-cimgui
+   ```
+   - By default, `./build.py` builds incrementally and does not install when run as a normal user.
+   - Use `./build.py --clean` when you want a full rebuild.
+   - Use `sudo ./build.py` when you also want to install the kernel driver, the user-space utilities / `libm2sdr`, and the SoapySDR module under the default prefix.
+   - Example install command with the optional GUI fetch step:
+   ```
+   cd litex_m2sdr/software
+   sudo ./build.py --fetch-cimgui
+   ```
+   - `m2sdr_check` and `m2sdr_scan` are optional SDL/OpenGL GUI tools. They are built only when SDL2/OpenGL development packages are installed and `litex_m2sdr/software/user/cimgui/` has been populated. If `cimgui` is absent, only those two GUI tools are skipped; the CLI tools, `libm2sdr`, and the SoapySDR module still build normally.
+
+5. **Install the Built Software:**
+   - Install the kernel driver:
+   ```
+   cd litex_m2sdr/software/kernel
+   sudo make install
+   sudo insmod m2sdr.ko # Optional if you do not want to reboot yet.
+   ```
+   - Install the public C API headers/library for external applications:
    ```
    cd litex_m2sdr/software/user
    make
    sudo make install_dev PREFIX=/usr/local
    sudo ldconfig
    ```
-
-6. **Load the Kernel Driver:**
-   - Load the kernel driver with the following commands:
+   - Install the SoapySDR module:
    ```
-   cd litex_m2sdr/software/kernel
-   make clean all
+   cd litex_m2sdr/software/soapysdr/build
    sudo make install
-   sudo insmod m2sdr.ko (To avoid having to reboot the machine)
    ```
+   - If you already used `sudo ./build.py`, the kernel and SoapySDR install steps above are already done. `libm2sdr` still needs `sudo make install_dev ...` if you want to develop external applications against the public C API.
    - 🚀 Ready for launch!
 
-7. **Run Your SDR Software:**
+6. **Run Your SDR Software:**
    - Now, you can launch your preferred SDR software (like GQRX or GNU Radio) and select the LiteX-M2SDR board through SoapySDR. 📡
 
 ### Host Requirements & Expectations
@@ -292,9 +367,8 @@ For those who want to dive deeper into development with the LiteX-M2SDR board, f
    cd litex_m2sdr/software/user
    make clean all
    ./m2sdr_util info
-   ./m2sdr_rf init -samplerate=30720000
-   ./tone_gen.py tone_tx.bin
-   ./m2sdr_play tone_tx.bin 100000
+   ./m2sdr_rf --sample-rate=30720000 --tx-freq=2400000000 --rx-freq=2400000000
+   ./m2sdr_gen --sample-rate 30720000 --signal tone --tone-freq 1000000 --amplitude 0.5
    ```
    - C API (libm2sdr) quick start and examples:
    ```
@@ -302,6 +376,7 @@ For those who want to dive deeper into development with the LiteX-M2SDR board, f
    cd litex_m2sdr/software/user
    make examples
    ../../doc/libm2sdr/example_sync_rx > /tmp/rx.iq
+   ../../doc/libm2sdr/example_tone_tx
    ```
    - `libm2sdr` is the common host interface used by the user utilities and the SoapySDR module, so example code there is the reference starting point for new host applications.
 

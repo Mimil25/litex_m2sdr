@@ -4,6 +4,10 @@ This directory documents the public C API for LiteX-M2SDR. The API is intentiona
 
 `libm2sdr` is now the primary low-level host interface for the project. The CLI utilities and the SoapySDR module both build on top of it.
 
+Note on TX control semantics: TX control uses positive attenuation values across
+both native tools and the SoapySDR layer. Use the `tx_att` config field and
+`m2sdr_set_tx_att()` helper.
+
 ## Build
 
 From `litex_m2sdr/software/user`:
@@ -33,15 +37,15 @@ sudo ldconfig
 2) Run a quick sanity check:
 
 ```
-m2sdr_selftest
+m2sdr_util info
 ```
 
 Optional checks:
 
 ```
-m2sdr_selftest --time
-m2sdr_selftest --loopback
-m2sdr_selftest --stream-loopback
+m2sdr_util scratch-test
+m2sdr_util clk-test
+m2sdr_util dma-test
 ```
 
 3) If you use SoapySDR, (re)install the module after updating libm2sdr:
@@ -149,7 +153,8 @@ If no identifier is provided, the library defaults to `/dev/m2sdr0` (PCIe) or `1
 - Backend selection/interop: `m2sdr_get_transport`, `m2sdr_get_fd`, `m2sdr_get_eb_handle`
 - Capabilities: `m2sdr_get_capabilities`
 - Control: `m2sdr_set_bitmode`, `m2sdr_set_dma_loopback`
-- RF: `m2sdr_config_init`, `m2sdr_apply_config`, `m2sdr_set_rx_frequency`, `m2sdr_set_tx_frequency`, `m2sdr_set_sample_rate`, `m2sdr_set_bandwidth`, `m2sdr_set_rx_gain`, `m2sdr_set_tx_gain`
+- RF: `m2sdr_config_init`, `m2sdr_apply_config`, `m2sdr_set_rx_frequency`, `m2sdr_set_tx_frequency`, `m2sdr_set_sample_rate`, `m2sdr_set_bandwidth`, `m2sdr_set_rx_gain`, `m2sdr_set_tx_att`
+  - `m2sdr_set_tx_att` uses positive-dB TX attenuation.
 - Streaming: `m2sdr_stream_config_init`, `m2sdr_stream_configure`, `m2sdr_sync_rx`, `m2sdr_sync_tx`
 - Time: `m2sdr_get_time`, `m2sdr_set_time`
 - Sensors: `m2sdr_get_fpga_dna`, `m2sdr_get_fpga_sensors`

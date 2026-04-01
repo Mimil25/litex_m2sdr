@@ -12,6 +12,9 @@ CXXFLAGS = $(CFLAGS) -I. -I$(SCAN_CIMGUI_DIR) -I$(SCAN_CIMGUI_DIR)/imgui -I$(SCA
 SDL2_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null)
 SDL2_LIBS   := $(shell pkg-config --libs sdl2 2>/dev/null)
 HAVE_SDL2   := $(shell pkg-config --exists sdl2 2>/dev/null && echo 1 || echo 0)
+PNG_CFLAGS  := $(shell pkg-config --cflags libpng 2>/dev/null)
+PNG_LIBS    := $(shell pkg-config --libs libpng 2>/dev/null)
+HAVE_CIMGUI := $(shell test -f $(SCAN_CIMGUI_DIR)/cimgui.h && test -f $(SCAN_CIMGUI_DIR)/imgui/imgui.cpp && echo 1 || echo 0)
 LDFLAGS = -g
 LDFLAGS += $(EXTRA_LDFLAGS)
 SANITIZER_FLAGS := $(sort $(filter -fsanitize=% -fno-sanitize-recover=%,$(CFLAGS) $(CXXFLAGS) $(LDFLAGS)))
@@ -28,20 +31,25 @@ FORCE:
 
 # Which binaries to build per interface
 ifeq ($(INTERFACE),USE_LITEETH)
-  BINARIES := m2sdr_util m2sdr_rf m2sdr_gpio m2sdr_play m2sdr_record m2sdr_sata m2sdr_selftest
+  BINARIES := m2sdr_util m2sdr_rf m2sdr_gpio m2sdr_play m2sdr_record m2sdr_sigmf m2sdr_sata
 else ifeq ($(INTERFACE),USE_LITEPCIE)
-  BINARIES := m2sdr_util m2sdr_rf m2sdr_gen m2sdr_play m2sdr_record m2sdr_gpio m2sdr_fm_tx m2sdr_fm_rx m2sdr_sata m2sdr_selftest
+  BINARIES := m2sdr_util m2sdr_rf m2sdr_gen m2sdr_play m2sdr_record m2sdr_sigmf m2sdr_gpio m2sdr_fm_tx m2sdr_fm_rx m2sdr_sata
 else
   $(error INTERFACE must be USE_LITEPCIE or USE_LITEETH)
 endif
 
-ifeq ($(HAVE_SDL2),1)
+ifeq ($(and $(filter 1,$(HAVE_SDL2)),$(filter 1,$(HAVE_CIMGUI))),1)
   BINARIES += m2sdr_check
   ifeq ($(INTERFACE),USE_LITEPCIE)
     BINARIES += m2sdr_scan
   endif
 else
-  $(warning SDL2 not found; skipping SDL2-based tools)
+  ifneq ($(HAVE_SDL2),1)
+    $(warning SDL2 not found; skipping SDL2-based tools)
+  endif
+  ifneq ($(HAVE_CIMGUI),1)
+    $(warning cimgui sources not found in software/user/cimgui; skipping SDL2-based tools)
+  endif
 endif
 
 LIBM2SDR_SONAME = libm2sdr.so.1
@@ -49,7 +57,7 @@ PROGS    = $(BINARIES) libm2sdr/libm2sdr.a libm2sdr/$(LIBM2SDR_SONAME) libm2sdr/
 EXAMPLES = ../../doc/libm2sdr/example_sync_rx ../../doc/libm2sdr/example_sync_tx \
            ../../doc/libm2sdr/example_tone_tx ../../doc/libm2sdr/example_rx_n
 CLI_OBJS = m2sdr_cli.o
-TEST_PROGS = test_libm2sdr
+TEST_PROGS = tests/test_libm2sdr tests/test_m2sdr_sigmf tests/test_sigmf_capture_smoke tests/test_sigmf_cli
 
 LIBM2SDR_OBJS = \
 	libm2sdr/m2sdr_si5351_i2c.o \
@@ -59,6 +67,8 @@ LIBM2SDR_OBJS = \
 	libm2sdr/m2sdr_stream.o \
 	libm2sdr/m2sdr_rf.o \
 	libm2sdr/m2sdr_utils.o \
+	libm2sdr/m2sdr_json.o \
+	libm2sdr/m2sdr_sigmf.o \
 	libm2sdr/m2sdr_hal_litepcie.o \
 	libm2sdr/m2sdr_hal_liteeth.o \
 	libliteeth/etherbone.o \
@@ -84,10 +94,28 @@ all: $(PROGS)
 
 examples: libm2sdr/libm2sdr.a $(EXAMPLES)
 test-libm2sdr: $(TEST_PROGS)
-	LD_LIBRARY_PATH=libm2sdr:$${LD_LIBRARY_PATH} ./test_libm2sdr
+	LD_LIBRARY_PATH=libm2sdr:$${LD_LIBRARY_PATH} ./tests/test_libm2sdr
 
-test_libm2sdr: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a test_libm2sdr.o | $(BUILD_FLAGS_FILE)
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ test_libm2sdr.o -Llibm2sdr -lm2sdr -Lliblitepcie -llitepcie -lm
+test-sigmf: tests/test_m2sdr_sigmf
+	./tests/test_m2sdr_sigmf
+
+test-sigmf-smoke: tests/test_sigmf_capture_smoke
+	./tests/test_sigmf_capture_smoke
+
+test-sigmf-cli: tests/test_sigmf_cli m2sdr_sigmf
+	./tests/test_sigmf_cli
+
+tests/test_libm2sdr: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) tests/test_libm2sdr.o | $(BUILD_FLAGS_FILE)
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $(CLI_OBJS) tests/test_libm2sdr.o libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
+
+tests/test_m2sdr_sigmf: libm2sdr/libm2sdr.a tests/test_m2sdr_sigmf.o | $(BUILD_FLAGS_FILE)
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ tests/test_m2sdr_sigmf.o libm2sdr/libm2sdr.a -lm
+
+tests/test_sigmf_capture_smoke: libm2sdr/libm2sdr.a tests/test_sigmf_capture_smoke.o | $(BUILD_FLAGS_FILE)
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ tests/test_sigmf_capture_smoke.o libm2sdr/libm2sdr.a -lm
+
+tests/test_sigmf_cli: tests/test_sigmf_cli.o | $(BUILD_FLAGS_FILE)
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ tests/test_sigmf_cli.o -lm
 
 analyze-libm2sdr:
 	cppcheck --enable=warning,style,performance,portability --error-exitcode=1 \
@@ -99,16 +127,16 @@ analyze-libm2sdr:
 		libm2sdr
 
 ../../doc/libm2sdr/example_sync_rx: ../../doc/libm2sdr/example_sync_rx.c liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a | $(BUILD_FLAGS_FILE)
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr -Llibm2sdr -lm2sdr -Lliblitepcie -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 ../../doc/libm2sdr/example_sync_tx: ../../doc/libm2sdr/example_sync_tx.c liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a | $(BUILD_FLAGS_FILE)
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr -Llibm2sdr -lm2sdr -Lliblitepcie -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 ../../doc/libm2sdr/example_tone_tx: ../../doc/libm2sdr/example_tone_tx.c liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a | $(BUILD_FLAGS_FILE)
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr -Llibm2sdr -lm2sdr -Lliblitepcie -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 ../../doc/libm2sdr/example_rx_n: ../../doc/libm2sdr/example_rx_n.c liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a | $(BUILD_FLAGS_FILE)
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr -Llibm2sdr -lm2sdr -Lliblitepcie -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $< -I../kernel -Ilibm2sdr libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 # --- Libraries ---
 
@@ -140,7 +168,7 @@ ad9361/libad9361_m2sdr.a: $(BUILD_FLAGS_FILE) ad9361/ad9361_api.o ad9361/ad9361_
 # Etherbone-only build
 ifeq ($(INTERFACE),USE_LITEETH)
 m2sdr_util: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_util.o
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm2sdr -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $(CLI_OBJS) m2sdr_util.o libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 m2sdr_rf: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_rf.o \
 	ad9361/ad9361.o ad9361/ad9361_api.o ad9361/ad9361_conv.o ad9361/util.o
@@ -152,26 +180,26 @@ m2sdr_play: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a libliteeth/libliteeth.
 m2sdr_record: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a libliteeth/libliteeth.a $(CLI_OBJS) m2sdr_record.o
 	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -Llibliteeth -lm -lm2sdr -llitepcie -lliteeth
 
+m2sdr_sigmf: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a m2sdr_sigmf.o
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ m2sdr_sigmf.o libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
+
 m2sdr_gpio: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_gpio.o
 	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm -lm2sdr -llitepcie
 
 m2sdr_sata: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a libliteeth/libliteeth.a $(CLI_OBJS) m2sdr_sata.o
 	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -Llibliteeth -lm -lm2sdr -llitepcie -lliteeth
 
-m2sdr_selftest: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_selftest.o
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm -lm2sdr -llitepcie
-
 endif
 
 ifeq ($(HAVE_SDL2),1)
-m2sdr_check: kissfft/kiss_fft.o m2sdr_check.o $(M2SDR_IMGUI_OBJS)
-	$(CXX) $(LINK_CXXFLAGS) $(LDFLAGS) -o $@ $^ -lm $(SDL2_LIBS) -lGL -ldl -pthread -lstdc++
+m2sdr_check: libm2sdr/libm2sdr.a kissfft/kiss_fft.o m2sdr_check.o $(M2SDR_IMGUI_OBJS)
+	$(CXX) $(LINK_CXXFLAGS) $(LDFLAGS) -o $@ kissfft/kiss_fft.o m2sdr_check.o $(M2SDR_IMGUI_OBJS) libm2sdr/libm2sdr.a -lm $(SDL2_LIBS) -lGL -ldl -pthread -lstdc++
 endif
 
 # PCIe-only build
 ifeq ($(INTERFACE),USE_LITEPCIE)
 m2sdr_util: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_util.o
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm2sdr -llitepcie -lm
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $(CLI_OBJS) m2sdr_util.o libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
 m2sdr_rf: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_rf.o \
 	ad9361/ad9361.o ad9361/ad9361_api.o ad9361/ad9361_conv.o ad9361/util.o
@@ -189,10 +217,10 @@ m2sdr_play: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_play
 m2sdr_record: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_record.o
 	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm -lm2sdr -llitepcie
 
-m2sdr_sata: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_sata.o
-	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm -lm2sdr -llitepcie
+m2sdr_sigmf: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a m2sdr_sigmf.o
+	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ m2sdr_sigmf.o libm2sdr/libm2sdr.a liblitepcie/liblitepcie.a -lm
 
-m2sdr_selftest: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_selftest.o
+m2sdr_sata: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a $(CLI_OBJS) m2sdr_sata.o
 	$(CC) $(LINK_CFLAGS) $(LDFLAGS) -o $@ $^ -Lliblitepcie -Llibm2sdr -lm -lm2sdr -llitepcie
 
 m2sdr_fm_tx: liblitepcie/liblitepcie.a m2sdr_fm_tx.o
@@ -205,7 +233,7 @@ M2SDR_SCAN_SRCS := m2sdr_scan.c kissfft/kiss_fft.c
 M2SDR_SCAN_OBJS := $(M2SDR_SCAN_SRCS:.c=.o)
 
 m2sdr_scan: liblitepcie/liblitepcie.a libm2sdr/libm2sdr.a ad9361/libad9361_m2sdr.a $(CLI_OBJS) $(M2SDR_SCAN_OBJS) $(M2SDR_IMGUI_OBJS)
-	$(CXX) $(LINK_CXXFLAGS) $(LDFLAGS) -o $@ $(CLI_OBJS) $(M2SDR_SCAN_OBJS) $(M2SDR_IMGUI_OBJS) -Lliblitepcie -Llibm2sdr -Lad9361 -llitepcie -lm2sdr -lad9361_m2sdr -lm $(SDL2_LIBS) -lGL -ldl -pthread -lstdc++
+	$(CXX) $(LINK_CXXFLAGS) $(LDFLAGS) -o $@ $(CLI_OBJS) $(M2SDR_SCAN_OBJS) $(M2SDR_IMGUI_OBJS) -Lliblitepcie -Llibm2sdr -Lad9361 -llitepcie -lm2sdr -lad9361_m2sdr -lm $(SDL2_LIBS) $(PNG_LIBS) -lGL -ldl -pthread -lstdc++
 endif
 
 clean:
@@ -214,6 +242,7 @@ clean:
 	rm -f .build-flags-*
 	rm -f liblitepcie/*.a liblitepcie/*.o liblitepcie/*.d
 	rm -f libm2sdr/*.a libm2sdr/*.o libm2sdr/*.d
+	rm -f tests/*.o tests/*.d tests/test_libm2sdr tests/test_m2sdr_sigmf tests/test_sigmf_capture_smoke tests/test_sigmf_cli
 	rm -f libliteeth/*.a libliteeth/*.o libliteeth/*.d
 	rm -f ad9361/*.o ad9361/*.d ad9361/*~
 	rm -f kissfft/*.o kissfft/*.d
@@ -230,6 +259,7 @@ $(BUILD_FLAGS_FILE): FORCE
 		rm -f *.o *.a *.d; \
 		rm -f liblitepcie/*.a liblitepcie/*.o liblitepcie/*.d; \
 		rm -f libm2sdr/*.a libm2sdr/*.o libm2sdr/*.d; \
+		rm -f tests/*.o tests/*.d tests/test_libm2sdr tests/test_m2sdr_sigmf tests/test_sigmf_capture_smoke tests/test_sigmf_cli; \
 		rm -f libliteeth/*.a libliteeth/*.o libliteeth/*.d; \
 		rm -f ad9361/*.o ad9361/*.d; \
 		rm -f kissfft/*.o kissfft/*.d; \
@@ -243,16 +273,19 @@ $(BUILD_FLAGS_FILE): FORCE
 	fi
 
 %.o: %.c $(BUILD_FLAGS_FILE)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(PNG_CFLAGS) -o $@ $<
 
 liblitepcie/%.o: liblitepcie/%.c $(BUILD_FLAGS_FILE)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(PNG_CFLAGS) -o $@ $<
+
+tests/%.o: tests/%.c $(BUILD_FLAGS_FILE)
+	$(CC) -c $(CFLAGS) $(PNG_CFLAGS) -o $@ $<
 
 libm2sdr/%.o: libm2sdr/%.c $(BUILD_FLAGS_FILE)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(PNG_CFLAGS) -o $@ $<
 
 ad9361/%.o: ad9361/%.c $(BUILD_FLAGS_FILE)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(PNG_CFLAGS) -o $@ $<
 
 %.o: %.cpp $(BUILD_FLAGS_FILE)
 	$(CXX) -c $(CXXFLAGS) $(SDL2_CFLAGS) -o $@ $<
@@ -294,4 +327,4 @@ check:
 	cmake -S ../soapysdr -B ../soapysdr/build
 	cmake --build ../soapysdr/build
 
--include $(wildcard *.d)
+-include $(wildcard *.d tests/*.d libm2sdr/*.d)

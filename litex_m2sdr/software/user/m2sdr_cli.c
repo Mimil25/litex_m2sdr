@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
+#include <errno.h>
+#include <stdint.h>
 
 #include "m2sdr_cli.h"
 
@@ -118,6 +121,73 @@ const char *m2sdr_cli_pcie_path(const struct m2sdr_cli_device *dev)
     (void)dev;
     return NULL;
 #endif
+}
+
+void m2sdr_cli_print_device_help(void)
+{
+    fputs("Device options:\n", stdout);
+    fputs("  -d, --device DEV      Use explicit device id.\n", stdout);
+#ifdef USE_LITEPCIE
+    fputs("  -c, --device-num N    Use /dev/m2sdrN (default: 0).\n", stdout);
+#elif defined(USE_LITEETH)
+    fputs("  -i, --ip ADDR         Target IP address (default: 192.168.1.50).\n", stdout);
+    fputs("  -p, --port PORT       Target port (default: 1234).\n", stdout);
+#endif
+}
+
+int m2sdr_cli_parse_int64(const char *text, int64_t *value)
+{
+    char *end = NULL;
+    double parsed;
+    double diff;
+    int64_t rounded;
+
+    if (!text || !value)
+        return -1;
+
+    errno = 0;
+    parsed = strtod(text, &end);
+    if (end == text || errno == ERANGE)
+        return -1;
+
+    while (*end && isspace((unsigned char)*end))
+        end++;
+
+    switch (*end) {
+    case 'k':
+    case 'K':
+        parsed *= 1e3;
+        end++;
+        break;
+    case 'M':
+        parsed *= 1e6;
+        end++;
+        break;
+    case 'G':
+        parsed *= 1e9;
+        end++;
+        break;
+    default:
+        break;
+    }
+
+    while (*end && isspace((unsigned char)*end))
+        end++;
+    if (*end != '\0')
+        return -1;
+
+    if (parsed > (double)INT64_MAX || parsed < (double)INT64_MIN)
+        return -1;
+
+    rounded = (parsed >= 0.0) ? (int64_t)(parsed + 0.5) : (int64_t)(parsed - 0.5);
+    diff = parsed - (double)rounded;
+    if (diff < 0.0)
+        diff = -diff;
+    if (diff > 1e-3)
+        return -1;
+
+    *value = rounded;
+    return 0;
 }
 
 void m2sdr_cli_error(const char *fmt, ...)

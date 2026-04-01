@@ -38,8 +38,9 @@ Once installed, the driver will be automatically loaded by SoapySDR. You can the
 You can pass device arguments to configure the driver. These are most useful when probing or selecting the device:
 
 - **RX AGC mode**: `rx_agc_mode=slow|fast|hybrid|mgc`
-- **Antenna lists**: `rx_antenna_list=A_BALANCED,B_BALANCED` and `tx_antenna_list=A,B`
-- **Per-channel antenna**: `rx_antenna0=...`, `rx_antenna1=...`, `tx_antenna0=...`, `tx_antenna1=...`
+- **Antenna selection**: RX uses `A_BALANCED`, TX uses `A`
+  The driver intentionally exposes only the board-connected RF ports, not the full AD9361 antenna enum.
+- **Per-channel antenna**: `rx_antenna0=A_BALANCED`, `rx_antenna1=A_BALANCED`, `tx_antenna0=A`, `tx_antenna1=A`
 - **Bit mode**: `bitmode=8|16`
 - **Oversampling**: `oversampling=0|1`
 - **AD9361 1x FIR profile**: `ad9361_fir_profile=legacy|bypass|match|wide`
@@ -51,7 +52,7 @@ You can pass device arguments to configure the driver. These are most useful whe
 
 Example:
 ```bash
-SoapySDRUtil --probe="driver=LiteXM2SDR,rx_agc_mode=fast,rx_antenna_list=A_BALANCED,tx_antenna_list=A,bitmode=8,oversampling=1"
+SoapySDRUtil --probe="driver=LiteXM2SDR,rx_agc_mode=fast,bitmode=8,oversampling=1"
 ```
 
 Example (122.88 MSPS edge-flatness A/B test):
@@ -85,7 +86,7 @@ This repository includes several Python utilities to help test and demonstrate t
 
   *Usage Example:*
   ```bash
-  ./test_play.py --samplerate 4e6 --bandwidth 56e6 --freq 2.4e9 --gain -20 --channel 0 --tone-freq 1e6 --ampl 0.8 --secs 5
+  ./test_play.py --samplerate 4e6 --bandwidth 56e6 --freq 2.4e9 --att 20 --channel 0 --tone-freq 1e6 --ampl 0.8 --secs 5
   ```
 
 - **test_record.py**
@@ -106,8 +107,6 @@ This repository includes several Python utilities to help test and demonstrate t
 ├── LiteXM2SDRDevice.hpp
 ├── LiteXM2SDRRegistration.cpp
 ├── LiteXM2SDRStreaming.cpp
-├── LiteXM2SDRUDPRx.cpp
-├── LiteXM2SDRUDPRx.hpp
 ├── test_play.py
 ├── test_record.py
 └── test_time.py
@@ -123,10 +122,7 @@ This repository includes several Python utilities to help test and demonstrate t
   Handles SoapySDR plugin registration and device enumeration.
 
 - **LiteXM2SDRStreaming.cpp**
-  Implements SoapySDR streaming methods (activateStream, readStream, writeStream…) using the PCIe DMA path.
-
-- **LiteXM2SDRUDPRx.cpp/hpp**
-  Implements optional UDP receive routines (via Etherbone or custom protocol).
+  Implements SoapySDR streaming methods (activateStream, readStream, writeStream…) using the PCIe DMA path, with the optional network receive path handled in the current driver sources.
 
 - **test_play.py, test_record.py, test_time.py**
   Python scripts to test and demonstrate transmission, recording, and hardware time functionality using the LiteXM2SDR SoapySDR driver.

@@ -28,13 +28,12 @@ int main(int argc, char **argv)
     cfg.channel_layout = M2SDR_CHANNEL_LAYOUT_2T2R;
     cfg.clock_source   = M2SDR_CLOCK_SOURCE_INTERNAL;
     cfg.tx_freq        = 100000000; /* 100 MHz */
-    cfg.tx_gain        = -5;
+    cfg.tx_att         = 5;
     if (m2sdr_apply_config(dev, &cfg) != 0) {
         fprintf(stderr, "m2sdr_apply_config failed\n");
         m2sdr_close(dev);
         return 1;
     }
-
     /* Use one full default payload per sync transfer. */
     unsigned samples_per_buf = m2sdr_bytes_to_samples(format, M2SDR_BUFFER_BYTES);
     if (m2sdr_sync_config(dev, M2SDR_TX, format,

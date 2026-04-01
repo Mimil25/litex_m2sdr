@@ -53,14 +53,14 @@ static void help(void)
            "      --sync MODE        Clock source: internal or external.\n"
            "\n"
            "      --refclk-freq HZ   Set the RefClk frequency in Hz (default: %" PRId64 ").\n"
-           "      --sample-rate SPS  Set RF sample rate in SPS (default: %d).\n"
+           "      --sample-rate SPS  Set RF sample rate in SPS (default: %d, accepts 30.72e6 or 20M).\n"
            "      --bandwidth HZ     Set the RF bandwidth in Hz (default: %d).\n"
            "      --tx-freq HZ       Set the TX frequency in Hz (default: %" PRId64 ").\n"
            "      --rx-freq HZ       Set the RX frequency in Hz (default: %" PRId64 ").\n"
-           "      --tx-gain DB       Set the TX gain in dB (default: %d).\n"
-           "      --rx-gain DB       Set both RX gains in dB (default: %d).\n"
-           "      --rx-gain1 DB      Set RX gain 1 in dB (default: %d).\n"
-           "      --rx-gain2 DB      Set RX gain 2 in dB (default: %d).\n"
+           "      --tx-att DB        Set TX attenuation in dB (default: %d).\n"
+           "      --rx-gain DB       Set both RX gains in dB and force manual gain mode.\n"
+           "      --rx-gain1 DB      Set RX gain 1 in dB and force manual gain mode.\n"
+           "      --rx-gain2 DB      Set RX gain 2 in dB and force manual gain mode.\n"
            "      --loopback N       Set internal loopback (default: %d).\n"
            "      --bist-tx-tone     Run TX tone test.\n"
            "      --bist-rx-tone     Run RX tone test.\n"
@@ -71,10 +71,7 @@ static void help(void)
            DEFAULT_BANDWIDTH,
            DEFAULT_TX_FREQ,
            DEFAULT_RX_FREQ,
-           DEFAULT_TX_GAIN,
-           DEFAULT_RX_GAIN,
-           DEFAULT_RX_GAIN,
-           DEFAULT_RX_GAIN,
+           DEFAULT_TX_ATT,
            DEFAULT_LOOPBACK,
            DEFAULT_BIST_TONE_FREQ);
     exit(1);
@@ -82,6 +79,17 @@ static void help(void)
 
 /* Main */
 /*------*/
+
+static int parse_i64_option(const char *name, const char *value, int64_t *out)
+{
+    if (m2sdr_cli_parse_int64(value, out) == 0)
+        return 0;
+
+    m2sdr_cli_error("invalid %s '%s' (expected integer, scientific notation, or K/M/G suffix)",
+                    name ? name : "value",
+                    value ? value : "(null)");
+    return -1;
+}
 
 int main(int argc, char **argv)
 {
@@ -110,8 +118,8 @@ int main(int argc, char **argv)
         { "tx_freq", required_argument, NULL, 9 },
         { "rx-freq", required_argument, NULL, 10 },
         { "rx_freq", required_argument, NULL, 10 },
-        { "tx-gain", required_argument, NULL, 11 },
-        { "tx_gain", required_argument, NULL, 11 },
+        { "tx-att", required_argument, NULL, 11 },
+        { "tx_att", required_argument, NULL, 11 },
         { "rx-gain", required_argument, NULL, 12 },
         { "rx_gain", required_argument, NULL, 12 },
         { "rx-gain1", required_argument, NULL, 13 },
@@ -188,32 +196,44 @@ int main(int argc, char **argv)
             }
             break;
         case 6:
-            cfg.refclk_freq = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("refclk frequency", optarg, &cfg.refclk_freq) != 0)
+                return 1;
             break;
         case 7:
-            cfg.sample_rate = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("sample rate", optarg, &cfg.sample_rate) != 0)
+                return 1;
             break;
         case 8:
-            cfg.bandwidth = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("bandwidth", optarg, &cfg.bandwidth) != 0)
+                return 1;
             break;
         case 9:
-            cfg.tx_freq = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("TX frequency", optarg, &cfg.tx_freq) != 0)
+                return 1;
             break;
         case 10:
-            cfg.rx_freq = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("RX frequency", optarg, &cfg.rx_freq) != 0)
+                return 1;
             break;
         case 11:
-            cfg.tx_gain = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("TX attenuation", optarg, &cfg.tx_att) != 0)
+                return 1;
             break;
         case 12:
-            cfg.rx_gain1 = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("RX gain", optarg, &cfg.rx_gain1) != 0)
+                return 1;
             cfg.rx_gain2 = cfg.rx_gain1;
+            cfg.program_rx_gains = true;
             break;
         case 13:
-            cfg.rx_gain1 = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("RX gain 1", optarg, &cfg.rx_gain1) != 0)
+                return 1;
+            cfg.program_rx_gains = true;
             break;
         case 14:
-            cfg.rx_gain2 = strtoll(optarg, NULL, 0);
+            if (parse_i64_option("RX gain 2", optarg, &cfg.rx_gain2) != 0)
+                return 1;
+            cfg.program_rx_gains = true;
             break;
         case 15:
             cfg.loopback = (uint8_t)strtoul(optarg, NULL, 0);
@@ -244,10 +264,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (m2sdr_apply_config(dev, &cfg) != 0) {
-        fprintf(stderr, "m2sdr_apply_config failed\n");
-        m2sdr_close(dev);
-        return 1;
+    {
+        int rc = m2sdr_apply_config(dev, &cfg);
+        if (rc != 0) {
+            fprintf(stderr, "m2sdr_apply_config failed: %s\n", m2sdr_strerror(rc));
+            m2sdr_close(dev);
+            return 1;
+        }
     }
 
     m2sdr_close(dev);

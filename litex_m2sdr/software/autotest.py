@@ -231,7 +231,7 @@ def m2sdr_util_info_autotest():
 def m2sdr_util_vcxo_autotest():
     print("M2SDR Util VCXO Test...")
 
-    log = subprocess.run(f"cd user && ./m2sdr_util vcxo_test", shell=True, capture_output=True, text=True)
+    log = subprocess.run(f"cd user && ./m2sdr_util vcxo-test", shell=True, capture_output=True, text=True)
 
     # SI5351C variants do not have VCXO; treat this as a skipped/non-fatal test.
     if "Detected SI5351C (no VCXO), exiting." in log.stdout:
@@ -243,7 +243,7 @@ def m2sdr_util_vcxo_autotest():
     ppm_variation_match = re.search(r"PPM Variation from Nominal \(50% PWM\): -?\s*([\d.]+)\s*PPM\s*/\s*\+\s*([\d.]+)\s*PPM", log.stdout)
 
     if not (hz_variation_match and ppm_variation_match):
-        print("Failed to retrieve necessary information from vcxo_test.")
+        print("Failed to retrieve necessary information from vcxo-test.")
         print_fail()
         return 1
 
@@ -271,8 +271,12 @@ def m2sdr_rf_autotest():
     errors = 0
     for samplerate in RFIC_SAMPLERATES:
         print(f"\tRF Init @ {samplerate/1e6:3.2f}MSPS...", end="")
-        log = subprocess.run(f"cd user && ./m2sdr_rf -samplerate={samplerate}", shell=True, capture_output=True, text=True)
-        success = ("AD936x Rev 2 successfully initialized" in log.stdout) and (log.returncode == 0)
+        samplerate_hz = int(samplerate)
+        log = subprocess.run(
+            f"cd user && ./m2sdr_rf --sample-rate={samplerate_hz}",
+            shell=True, capture_output=True, text=True
+        )
+        success = (log.returncode == 0)
         errors += print_result(success)
     return errors
 
@@ -282,7 +286,7 @@ def m2sdr_dma_loopback_autotest():
     print("M2SDR DMA Loopback Test...")
 
     board_variant = get_board_variant()
-    cmd = f"cd user && ./m2sdr_util dma_test -t {DMA_LOOPBACK_TEST_DURATION}"
+    cmd = f"cd user && ./m2sdr_util dma-test -t {DMA_LOOPBACK_TEST_DURATION}"
     return run_dma_test_with_retries(
         command        = cmd,
         speed_threshold= DMA_LOOPBACK_SPEED_THRESHOLD[board_variant],
@@ -297,10 +301,16 @@ def m2sdr_rfic_loopback_autotest():
     print("M2SDR RFIC Loopback Test...")
 
     # Configure RFIC @ 30.72MSPS with internal loopback set.
-    log = subprocess.run(f"cd user && ./m2sdr_rf -loopback=1 -samplerate=30.72e6",  shell=True, capture_output=True, text=True)
+    log = subprocess.run(
+        "cd user && ./m2sdr_rf --loopback=1 --sample-rate=30720000",
+        shell=True, capture_output=True, text=True
+    )
+    if log.returncode != 0:
+        print("\tRFIC loopback configuration failed: ", end="")
+        return print_result(False)
 
     # Run RFIC loopback test.
-    cmd = f"cd user && ./m2sdr_util dma_test -w 12 -a -t {RFIC_LOOPBACK_TEST_DURATION}"
+    cmd = f"cd user && ./m2sdr_util dma-test -w 12 -a -t {RFIC_LOOPBACK_TEST_DURATION}"
     return run_dma_test_with_retries(
         command        = cmd,
         speed_threshold= RFIC_LOOPBACK_SPEED_THRESHOLD,

@@ -142,12 +142,50 @@ class CRG(LiteXModule):
             self.refclk_mmcm.params.update(p_CLKOUT1_USE_FINE_PS="TRUE")
             
             # DMTD MMCM (62.5MHz).
-            self.dmtd_mmcm = S7MMCM(speedgrade=-3, fractional=False)
-            self.comb += self.dmtd_mmcm.reset.eq(self.rst)
-            self.dmtd_mmcm.register_clkin(ClockSignal("clk200"), 200e6)
-            self.dmtd_mmcm.create_clkout(self.cd_clk_62m5_dmtd, 62.5e6, margin=0)
-            self.dmtd_mmcm.expose_dps("clk200", with_csr=False)
-            self.dmtd_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
+            # self.dmtd_mmcm = S7MMCM(speedgrade=-3, fractional=False)
+            # self.comb += self.dmtd_mmcm.reset.eq(self.rst)
+            # self.dmtd_mmcm.register_clkin(ClockSignal("clk200"), 200e6)
+            # self.dmtd_mmcm.create_clkout(self.cd_clk_62m5_dmtd, 62.5e6, margin=0)
+            # self.dmtd_mmcm.expose_dps("clk200", with_csr=False)
+            # self.dmtd_mmcm.params.update(p_CLKOUT0_USE_FINE_PS="TRUE")
+            
+            mmcm1_feedback = Signal()
+            mmcm1_locked = Signal()
+            mmcm1_out = Signal()
+            self.dmtd_mmcm1 = Instance(
+                    'MMCME2_ADV',
+                    p_CLKFBOUT_MULT_F = 15.875,
+                    p_CLKIN1_PERIOD = 1e9/62.5e6,
+                    p_COMPENSATION = 'INTERNAL',
+
+                    p_CLKOUT1_DIVIDE = 16,
+
+                    i_CLKIN1 = ClockSignal('wr'),
+                    o_CLKOUT1 = mmcm1_out,
+
+                    i_CLKFBIN = mmcm1_feedback,
+                    o_CLKFBOUT = mmcm1_feedback,
+                    o_LOCKED = mmcm1_locked,
+                    i_CLKINSEL = 1,
+                    )
+            mmcm2_feedback = Signal()
+            mmcm2_locked = Signal()
+            self.dmtd_mmcm2 = Instance(
+                    'MMCME2_ADV',
+                    p_CLKFBOUT_MULT_F = 16.125,
+                    p_CLKIN1_PERIOD = 1e9/62.5e6,
+                    p_COMPENSATION = 'INTERNAL',
+
+                    p_CLKOUT1_DIVIDE = 16,
+
+                    i_CLKIN1 = mmcm1_out,
+                    o_CLKOUT1 = ClockSignal('clk_62m5_dmtd'),
+
+                    i_CLKFBIN = mmcm2_feedback,
+                    o_CLKFBOUT = mmcm2_feedback,
+                    o_LOCKED = mmcm2_locked,
+                    i_CLKINSEL = 1,
+                    )
             
             platform.add_false_path_constraints(ClockDomain('wr').clk, ClockDomain('clk200').clk)
 
@@ -661,33 +699,33 @@ class BaseSoC(SoCMini):
 
         # Leds -------------------------------------------------------------------------------------
 
-        led_pad = platform.request("user_led")
-        self.leds = StatusLed(sys_clk_freq=sys_clk_freq)
+        # led_pad = platform.request("user_led")
+        # self.leds = StatusLed(sys_clk_freq=sys_clk_freq)
 
-        led_tx_activity = Signal()
-        led_rx_activity = Signal()
-        self.comb += [
-            led_tx_activity.eq((self.pcie_dma0.source.valid & self.pcie_dma0.source.ready if with_pcie else 0) |
-                               (self.eth_tx_streamer.source.valid & self.eth_tx_streamer.source.ready if with_eth else 0) |
-                               (self.sata_tx_streamer.source.valid & self.sata_tx_streamer.source.ready if with_sata else 0)),
-            led_rx_activity.eq((self.pcie_dma0.sink.valid & self.pcie_dma0.sink.ready if with_pcie else 0) |
-                               (self.eth_rx_streamer.sink.valid & self.eth_rx_streamer.sink.ready if with_eth else 0) |
-                               (self.sata_rx_streamer.sink.valid & self.sata_rx_streamer.sink.ready if with_sata else 0)),
-        ]
+        # led_tx_activity = Signal()
+        # led_rx_activity = Signal()
+        # self.comb += [
+        #     led_tx_activity.eq((self.pcie_dma0.source.valid & self.pcie_dma0.source.ready if with_pcie else 0) |
+        #                        (self.eth_tx_streamer.source.valid & self.eth_tx_streamer.source.ready if with_eth else 0) |
+        #                        (self.sata_tx_streamer.source.valid & self.sata_tx_streamer.source.ready if with_sata else 0)),
+        #     led_rx_activity.eq((self.pcie_dma0.sink.valid & self.pcie_dma0.sink.ready if with_pcie else 0) |
+        #                        (self.eth_rx_streamer.sink.valid & self.eth_rx_streamer.sink.ready if with_eth else 0) |
+        #                        (self.sata_rx_streamer.sink.valid & self.sata_rx_streamer.sink.ready if with_sata else 0)),
+        # ]
 
-        self.comb += [
-            self.leds.time_running.eq( self.time_gen.enable),
-            self.leds.time_valid.eq(   self.time_gen.time != 0),
-            self.leds.pcie_present.eq( int(with_pcie)),
-            self.leds.pcie_link_up.eq( self.pcie_phy._link_status.fields.status if with_pcie else 0),
-            self.leds.dma_synced.eq(   self.pcie_dma0.synchronizer.synced if with_pcie else 0),
-            self.leds.eth_present.eq(  int(with_eth)),
-            self.leds.eth_link_up.eq(  self.eth_phy.link_up if with_eth else 0),
-            self.leds.tx_activity.eq(  led_tx_activity),
-            self.leds.rx_activity.eq(  led_rx_activity),
-            self.leds.pps_pulse.eq(    self.pps_gen.pps_pulse),
-            led_pad.eq(                self.leds.output),
-        ]
+        # self.comb += [
+        #     self.leds.time_running.eq( self.time_gen.enable),
+        #     self.leds.time_valid.eq(   self.time_gen.time != 0),
+        #     self.leds.pcie_present.eq( int(with_pcie)),
+        #     self.leds.pcie_link_up.eq( self.pcie_phy._link_status.fields.status if with_pcie else 0),
+        #     self.leds.dma_synced.eq(   self.pcie_dma0.synchronizer.synced if with_pcie else 0),
+        #     self.leds.eth_present.eq(  int(with_eth)),
+        #     self.leds.eth_link_up.eq(  self.eth_phy.link_up if with_eth else 0),
+        #     self.leds.tx_activity.eq(  led_tx_activity),
+        #     self.leds.rx_activity.eq(  led_rx_activity),
+        #     self.leds.pps_pulse.eq(    self.pps_gen.pps_pulse),
+        #     led_pad.eq(                self.leds.output),
+        # ]
 
         # GPIO -------------------------------------------------------------------------------------
 
@@ -716,6 +754,7 @@ class BaseSoC(SoCMini):
 
             from litex_wr_nic.gateware.soc  import LiteXWRNICSoC
             from litex_wr_nic.gateware.ps_gen  import PSGen
+            from litex_wr_nic.gateware.txpi_tunner  import TXPITunner
 
             # IOs.
             # ----
@@ -794,34 +833,41 @@ class BaseSoC(SoCMini):
 
             # RefClk MMCM Phase Shift.
             # ------------------------
-            self.refclk_mmcm_ps_gen = PSGen(
-                 cd_psclk    = "clk200",
-                 cd_sys      = "wr",
-                 ctrl_size   = wr_dac_bits,
-                 )
+            #self.refclk_mmcm_ps_gen = PSGen(
+            #     cd_psclk    = "clk200",
+            #     cd_sys      = "wr",
+            #     ctrl_size   = wr_dac_bits,
+            #     )
+            #self.comb += [
+            #    self.refclk_mmcm_ps_gen.ctrl_data.eq(self.dac_refclk_data),
+            #    self.refclk_mmcm_ps_gen.ctrl_load.eq(self.dac_refclk_load),
+            #    self.crg.refclk_mmcm.psen.eq(self.refclk_mmcm_ps_gen.psen),
+            #    self.crg.refclk_mmcm.psincdec.eq(self.refclk_mmcm_ps_gen.psincdec),
+            #]
+
+            self.refclk_txpi_tunner = ClockDomainsRenamer('wr')(TXPITunner(wr_dac_bits))
             self.comb += [
-                self.refclk_mmcm_ps_gen.ctrl_data.eq(self.dac_refclk_data),
-                self.refclk_mmcm_ps_gen.ctrl_load.eq(self.dac_refclk_load),
-                self.crg.refclk_mmcm.psen.eq(self.refclk_mmcm_ps_gen.psen),
-                self.crg.refclk_mmcm.psincdec.eq(self.refclk_mmcm_ps_gen.psincdec),
+                self.refclk_txpi_tunner.ctrl_data.eq(self.dac_refclk_data),
+                self.refclk_txpi_tunner.ctrl_load.eq(self.dac_refclk_load),
+                self.txpippmstepsize.eq(self.refclk_txpi_tunner.txpippmstepsize),
             ]
 
             # DMTD MMCM Phase Shift.
             # ----------------------
-            self.dmtd_mmcm_ps_gen = PSGen(
-                 cd_psclk    = "clk200",
-                 cd_sys      = "wr",
-                 ctrl_size   = wr_dac_bits,
-                 )
-            self.comb += [
-                self.dmtd_mmcm_ps_gen.ctrl_data.eq(self.dac_dmtd_data),
-                self.dmtd_mmcm_ps_gen.ctrl_load.eq(self.dac_dmtd_load),
-                self.crg.dmtd_mmcm.psen.eq(self.dmtd_mmcm_ps_gen.psen),
-                self.crg.dmtd_mmcm.psincdec.eq(self.dmtd_mmcm_ps_gen.psincdec),
-            ]
+            # self.dmtd_mmcm_ps_gen = PSGen(
+            #      cd_psclk    = "clk200",
+            #      cd_sys      = "wr",
+            #      ctrl_size   = wr_dac_bits,
+            #      )
+            # self.comb += [
+            #     self.dmtd_mmcm_ps_gen.ctrl_data.eq(self.dac_dmtd_data),
+            #     self.dmtd_mmcm_ps_gen.ctrl_load.eq(self.dac_dmtd_load),
+            #     self.crg.dmtd_mmcm.psen.eq(self.dmtd_mmcm_ps_gen.psen),
+            #     self.crg.dmtd_mmcm.psincdec.eq(self.dmtd_mmcm_ps_gen.psincdec),
+            # ]
 
-            if with_datapath_sync:
-                
+
+            if with_datapath_sync:    
 
                 # test_cd = ClockDomain('test')
                 # test62_cd = ClockDomain('test62')
@@ -931,8 +977,9 @@ class BaseSoC(SoCMini):
                     ("wr_clk_out", 0, Pins("V13"), IOStandard("LVCMOS33")),
                 ])
                 
-                #self.comb += platform.request('wr_clk_out').eq(test_cd.clk)
-                self.comb += platform.request('wr_clk_out').eq(clk_fb)
+                self.comb += platform.request('wr_clk_out').eq(ClockSignal('wr'))
+                #self.comb += platform.request('wr_clk_out').eq(clk_fb)
+                #self.comb += platform.request('wr_clk_out').eq(self.txpippmstepsize[0])
 
 
 
@@ -1169,19 +1216,20 @@ class BaseSoC(SoCMini):
         )
 
     def add_ad9361_data_probe(self, depth=4096):
+        print("test                                           ####")
         analyzer_signals = [
             # self.ad9361.phy.sink,   # TX.
             #self.ad9361.phy.source, # RX.
             #self.ad9361.prbs_rx.fields.synced,
             #self.debug,
             self.pps_out_pulse,
-            self.lock_sweep_phase
+            self.txpippmstepsize,
         ]
         self.analyzer = LiteScopeAnalyzer(analyzer_signals,
             depth        = depth,
             clock_domain = "wr",
             register     = True,
-            csr_csv      = "test/analyzer.csv"
+            csr_csv      = "scripts/analyzer.csv"
         )
 
 # Build --------------------------------------------------------------------------------------------
